@@ -24,6 +24,7 @@ class HTTPServerRouter
 				else
 					return ""
 			.join("")
+			.slice(1)
 
 		if (/\./.test(pathParts[pathParts.length - 1]))
 			Handler = require("../HTTPHandlers/ResourceHandler")

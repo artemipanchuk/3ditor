@@ -14,7 +14,7 @@ class ResourceHandler extends AHandler
 
 	execute: ->
 		data = URL.parse(@request.url, true)
-		path = data.pathname
+		path = data.pathname.slice(1)
 
 		@responseFileCached path
 

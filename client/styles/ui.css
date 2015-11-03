@@ -1,0 +1,70 @@
+@font-face {
+	font-family: "simplesnails";
+	font-style:  normal;
+	src: url("/client/fonts/simplesnails.ttf") format("truetype");
+}
+
+@font-face {
+	font-family: "pfsquaresans";
+	font-style: normal;
+	src: url("/client/fonts/pfsquaresans.otf");
+}
+
+header {
+	position: fixed;
+	top: 0;
+	width: 100%;
+	height: 50px;
+	background: #302050;
+	color: #FFFFFF;
+	font-family: "simplesnails"
+}
+
+header h1 {
+	padding-left: 20px;
+	font-weight: bold;
+}
+
+section {
+	padding-top: 50px;
+	position: fixed;
+	width: 100%;
+	height: 100%;
+	color: #000000;
+}
+
+section .column {
+	height: 100%;
+	text-align: center;
+}
+
+section .column .box {
+	position: absolute;
+	width: 100%;
+	height: 50px;
+	top: 33%;
+	font-family: consolas;
+	font-size: 50px;
+	color: #302050;
+	cursor: pointer;
+}
+
+section .column .box:hover {
+	font-weight: bold;
+}
+
+footer {
+	position: fixed;
+	bottom: 0;
+	width: 100%;
+	background: #302050;
+	height: 100px;
+	color: #FFFFFF;
+	font-family: "consolas"
+}
+
+footer h2 {
+	padding-left: 20px;
+	font-size: 15px;
+	font-weight: bold;
+}
