@@ -7,6 +7,9 @@
 		<link rel="stylesheet" href="/client/libs/bootstrap/css/bootstrap-theme.min.css">
 		<link rel="stylesheet" href="/client/libs/font-awesome.min.css">
 
+		<script type="x-shader/x-vertex"   id="vertexShader"> </script>
+		<script type="x-shader/x-fragment" id="fragmentShader"></script>
+
 		<script src="client/libs/require.js"></script>
 		<script>
 			requirejs.config({
@@ -21,8 +24,8 @@
 			});
 
 			requirejs(['jquery', 'jsviews'], function() {
-				requirejs(['classes/UI/UI'], function() {
-					new UI;
+				requirejs(['classes/Menu'], function() {
+					new Menu;
 				});
 			});
 		</script>
