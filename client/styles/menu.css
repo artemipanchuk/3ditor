@@ -10,6 +10,10 @@
 	src: url("/client/fonts/pfsquaresans.otf");
 }
 
+body {
+	background-color: #000000;
+}
+
 header {
 	position: fixed;
 	top: 0;
@@ -17,11 +21,13 @@ header {
 	height: 50px;
 	background: #302050;
 	color: #FFFFFF;
-	font-family: "simplesnails"
+	font-family: "simplesnails";
+	z-index: 2;
 }
 
 header h1 {
 	padding-left: 20px;
+	line-height: 30px;
 	font-weight: bold;
 }
 
@@ -34,6 +40,7 @@ section {
 	opacity: 0;
 	transition: opacity linear 0.5s;
 	z-index: 0;
+	background-color: #FFFFFF;
 }
 
 section.active {
@@ -68,7 +75,8 @@ footer {
 	background: #302050;
 	height: 100px;
 	color: #FFFFFF;
-	font-family: "consolas"
+	font-family: "consolas";
+	z-index: 2;
 }
 
 footer h2 {
@@ -77,6 +85,7 @@ footer h2 {
 	font-weight: bold;
 }
 
-iframe {
-	border: none;
+section#editorSection.active {
+	padding-top: 0;
+	z-index: 3;
 }

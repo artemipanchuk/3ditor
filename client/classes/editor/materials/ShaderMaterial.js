@@ -1,103 +1,29 @@
-define([
-	"classes/editor/materials/Material"
-], function() {
-	this.ShaderMaterial = function() {
-		function ShaderMaterial(parameters) {
-			Material.call(this);
+ShaderMaterial = function (parameters) {
+	Material.call(this, parameters);
 
-			this.type = 'ShaderMaterial';
+	parameters = parameters || {};
 
-			this.defines = {};
-			this.uniforms = {};
+	this.fragmentShader = parameters.fragmentShader !== undefined ? parameters.fragmentShader : "void main() {}";
+	this.vertexShader = parameters.vertexShader !== undefined ? parameters.vertexShader : "void main() {}";
+	this.uniforms = parameters.uniforms !== undefined ? parameters.uniforms : {};
+	this.attributes = parameters.attributes;
 
-			this.vertexShader = 'void main() {\n\tgl_Position = projectionMatrix * modelViewMatrix * vec4(position, 1.0);\n}';
-			this.fragmentShader = 'void main() {\n\tgl_FragColor = vec4(1.0, 0.0, 0.0, 1.0);\n}';
+	this.shading = parameters.shading !== undefined ? parameters.shading : SmoothShading;
 
-			this.shading = SmoothShading;
+	this.wireframe = parameters.wireframe !== undefined ? parameters.wireframe : false;
+	this.wireframeLinewidth = parameters.wireframeLinewidth !== undefined ? parameters.wireframeLinewidth : 1;
 
-			this.linewidth = 1;
+	this.fog = parameters.fog !== undefined ? parameters.fog : false;
 
-			this.wireframe = false;
-			this.wireframeLinewidth = 1;
+	this.lights = parameters.lights !== undefined ? parameters.lights : false;
 
-			this.fog = false; // set to use scene fog
+	this.vertexColors = parameters.vertexColors !== undefined ? parameters.vertexColors : NoColors;
 
-			this.lights = false; // set to use scene lights
+	this.skinning = parameters.skinning !== undefined ? parameters.skinning : false;
 
-			this.vertexColors = NoColors; // set to use "color" attribute stream
+	this.morphTargets = parameters.morphTargets !== undefined ? parameters.morphTargets : false;
+	this.morphNormals = parameters.morphNormals !== undefined ? parameters.morphNormals : false;
+};
 
-			this.skinning = false; // set to use skinning attribute streams
-
-			this.morphTargets = false; // set to use morph targets
-			this.morphNormals = false; // set to use morph normals
-
-			this.derivatives = false; // set to use derivatives
-
-			// When rendered geometry doesn't include these attributes but the material does,
-			// use these default values in WebGL. This avoids errors when buffer data is missing.
-			this.defaultAttributeValues = {
-				'color': [ 1, 1, 1 ],
-				'uv': [ 0, 0 ],
-				'uv2': [ 0, 0 ]
-			};
-
-			this.index0AttributeName = undefined;
-
-			if (parameters !== undefined) {
-				if (parameters.attributes !== undefined) {
-					console.error('ShaderMaterial: attributes should now be defined in BufferGeometry instead.');
-				}
-
-				this.setValues(parameters);
-			}
-		};
-
-		ShaderMaterial.prototype = Object.create(Material.prototype);
-		ShaderMaterial.prototype.constructor = ShaderMaterial;
-
-		ShaderMaterial.prototype.copy = function (source) {
-			Material.prototype.copy.call(this, source);
-
-			this.fragmentShader = source.fragmentShader;
-			this.vertexShader = source.vertexShader;
-
-			this.uniforms = UniformsUtils.clone(source.uniforms);
-
-			this.attributes = source.attributes;
-			this.defines = source.defines;
-
-			this.shading = source.shading;
-
-			this.wireframe = source.wireframe;
-			this.wireframeLinewidth = source.wireframeLinewidth;
-
-			this.fog = source.fog;
-
-			this.lights = source.lights;
-
-			this.vertexColors = source.vertexColors;
-
-			this.skinning = source.skinning;
-
-			this.morphTargets = source.morphTargets;
-			this.morphNormals = source.morphNormals;
-
-			this.derivatives = source.derivatives;
-
-			return this;
-		};
-
-		ShaderMaterial.prototype.toJSON = function (meta) {
-			var data = Material.prototype.toJSON.call(this, meta);
-
-			data.uniforms = this.uniforms;
-			data.attributes = this.attributes;
-			data.vertexShader = this.vertexShader;
-			data.fragmentShader = this.fragmentShader;
-
-			return data;
-		};
-
-		return ShaderMaterial;
-	}();
-});
+ShaderMaterial.prototype = new Material();
+ShaderMaterial.prototype.constructor = ShaderMaterial;

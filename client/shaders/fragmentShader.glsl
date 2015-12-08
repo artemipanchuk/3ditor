@@ -2,7 +2,7 @@
 
 precision highp float;
 
-#endif // GL_ES
+#endif
 
 #define EPS       0.001
 #define EPS1      0.01
@@ -12,11 +12,7 @@ precision highp float;
 #define ROOTTHREE 0.57735027
 #define HUGEVAL   1e20
 
-/*
- * Auxiliary Functions:
- */
-
-float maxcomp( in vec3 p) {
+float maxcomp(in vec3 p) {
 	return max(p.x,max(p.y,p.z));
 }
 
@@ -24,19 +20,12 @@ float rand(in vec2 seed) {
 	return fract(sin(dot(seed.xy,vec2(12.9898,78.233))) * 43758.5453);
 }
 
-/*
- * Distance Functions:
- * (Primitives)
- */
-
-float sdPlane(vec3 p, vec4 n)
-{
+float sdPlane(vec3 p, vec4 n) {
 	return dot(p,n.xyz) + n.w;
 }
 
-float sdSphere(vec3 p, float s)
-{
-	return length(p)-s;
+float sdSphere(vec3 p, float s) {
+	return length(p) - s;
 }
 
 float sdBox(vec3 p, vec3 b) {
@@ -45,23 +34,19 @@ float sdBox(vec3 p, vec3 b) {
 	return min(mc,length(max(di,0.0)));
 }
 
-float udBox(vec3 p, vec3 b)
-{
+float udBox(vec3 p, vec3 b) {
 	return length(max(abs(p)-b,0.0));
 }
 
-float udRoundBox(vec3 p, vec3 b, float r)
-{
+float udRoundBox(vec3 p, vec3 b, float r) {
 	return length(max(abs(p)-b,0.0))-r;
 }
 
-float sdCylinder(vec3 p, vec3 c)
-{
+float sdCylinder(vec3 p, vec3 c) {
 	return length(p.xz-c.xy)-c.z;
 }
 
-float sdTorus(vec3 p, vec2 t)
-{
+float sdTorus(vec3 p, vec2 t) {
 	vec2 q = vec2(length(p.xz)-t.x,p.y);
 	return length(q)-t.y;
 }
@@ -70,35 +55,22 @@ float lengthN(vec2 v, float n) {
 	return pow(pow(v.x,n)+pow(v.y,n), 1.0/n);
 }
 
-float sdTorusN(vec3 p, vec2 t, float n)
-{
+float sdTorusN(vec3 p, vec2 t, float n) {
 	vec2 q = vec2(lengthN(p.xz,n)-t.x,p.y);
 	return lengthN(q,n)-t.y;
 }
 
-/*
- * Distance Functions:
- * (Operations)
- */
-
-float opU(float d1, float d2)
-{
+float opU(float d1, float d2) {
 	return min(d1,d2);
 }
 
-float opS(float d1, float d2)
-{
+float opS(float d1, float d2) {
 	return max(-d1,d2);
 }
 
-float opI(float d1, float d2)
-{
+float opI(float d1, float d2) {
 	return max(d1,d2);
 }
-
-/*
- * Shader Variables:
- */
 
 varying vec2 vUv;
 
@@ -109,71 +81,38 @@ uniform float uAspect;
 uniform float uTime;
 uniform vec3 uLightP;
 
-/*
- * Shader Constants:
- */
-
 const float c_fBounds = 15.0;
 const float c_fSmooth = 0.70;
 const float c_fDither = 0.001;
 
-const vec3 c_vFogColor = vec3(0.6, 0.6, 0.7);
+const vec3 c_vFogColor  = vec3(0.6, 0.6, 0.7);
 const vec3 c_vMaterial0 = vec3(0.5);
 const vec3 c_vMaterial1 = vec3(0.9, 0.7, 0.5);
 const vec3 c_vMaterial2 = vec3(0.3, 0.5, 1.0);
 
-/*
- * Global variables:
- */
-
 float gMin = 0.0;
 float gMax = HUGEVAL;
 
-vec3 currCol = c_vMaterial2;
+vec3 currCol  = c_vMaterial2;
 float currSSS = 1.0;
-bool currHit = false;
+bool currHit  = false;
 vec3 currPos, currNor;
 
+//#define DE_WARP
+//#define DE_ROTATE
+//#define DE_TWIST
+//#define DE_DISPLACE
+//#define DE_GROUND
+
+//#define DE_BOX
+//#define DE_ROUNDBOX
+//#define DE_USHAPE
+//#define DE_MENGER
+//#define DE_KNOT
+//#define DE_QUATERNION
+
 float getDist(in vec3 p) {
-
-	#ifdef DE_WARP
-
-	p.x = mod(p.x,5.0)-2.5;
-	p.z = mod(p.z,5.0)-2.5;
-
-	#endif // DE_WARP
-
 	vec3 p1 = p;
-
-	#ifdef DE_ROTATE
-
-	mat3 rotateY = mat3(
-		cos(uTime),   0.0,  sin(uTime),
-		0.0,          1.0,  0.0,       
-		-sin(uTime),  0.0,  cos(uTime)
-	);
-
-	mat3 rotateX = mat3(
-		1.0, 0.0, 0.0,
-		0.0, cos(uTime), sin(uTime), 
-		0.0, -sin(uTime), cos(uTime)
-	);
-
-	p1 = rotateY*rotateX*p;
-
-	#endif // DE_ROTATE
-
-	#ifdef DE_TWIST
-
-	float twist = sin(2.0*uTime);
-	float c = cos(twist*p1.y);
-	float s = sin(twist*p1.y);
-	mat2  m = mat2(c,-s,s,c);
-	p1 = vec3(m*p1.xz,p1.y);
-
-	#endif // DE_TWIST
-
-	/* SCENE CONSTRUCTION */
 
 	float d0 = HUGEVAL;
 	float d1 = HUGEVAL;
@@ -199,6 +138,7 @@ float getDist(in vec3 p) {
 	#endif
 
 	#ifdef DE_USHAPE
+	// ushape box
 	d0 = sdBox(p1,vec3(2.0, 2.0, 1.0));
 	d1 = sdSphere(p1-vec3(0.0, 1.5, 0.0), 1.5);
 	d0 = opS(d1, d0);
@@ -209,9 +149,8 @@ float getDist(in vec3 p) {
 	d0 += d2;
 	#endif
 
-
 	#ifdef DE_GROUND
-
+	// ground plane
 	d1 = sdPlane(p+vec3(0.0,3.0,0.0), vec4(0.0,1.0,0.0,0.0));
 	if (d1<d0) {
 		d0 = d1;
@@ -223,13 +162,10 @@ float getDist(in vec3 p) {
 		currCol = c_vMaterial2;
 		currSSS = 1.0;
 	}
-
 	#else
-
 	d1 = p.z*p.z+HUGEVAL;
 	d0 = d1 < d0 ? d1 : d0;
-
-	#endif // DE_GROUND
+	#endif
 
 	return d0;
 }
@@ -246,10 +182,11 @@ vec3 getNormal(in vec3 pos) {
 bool intersectBounds (in vec3 ro, in vec3 rd) {
 	float B = dot(ro,rd);
 	float C = dot(ro,ro) - c_fBounds;
-
+	
 	float d = B*B - C;
-
-	if (d<0.0) return false;
+	
+	if (d < 0.0)
+		return false;
 
 	d = sqrt(d);
 	B = -B;
@@ -259,19 +196,18 @@ bool intersectBounds (in vec3 ro, in vec3 rd) {
 	return true;
 }
 
-int intersectSteps(in vec3 ro, in vec3 rd) {
+int intersectSteps(in vec3 ro, in vec3 rd) {  
 	float t = 0.0;
-	int steps = -1;  
+	int steps = -1;
 
-	for(int i=0; i<MAX_STEPS; ++i)
-	{
+	for(int i = 0; i < MAX_STEPS; ++i) {
 		float dt = getDist(ro + rd*t) * c_fSmooth;
 		if(dt >= EPS) {
 			steps++;
-		}
-		else {
+		} else {
 			break;
 		}
+
 		t += dt;
 	}
 
@@ -282,10 +218,9 @@ float intersectDist(in vec3 ro, in vec3 rd) {
 	float t = gMin;
 	float dist = -1.0;
 
-	for(int i=0; i<MAX_STEPS; ++i)
-	{
+	for(int i=0; i < MAX_STEPS; ++i) {
 		float dt = getDist(ro + rd*t) * c_fSmooth;
-
+		
 		if(dt < EPS) {
 			dist = t;
 			break;
@@ -300,14 +235,15 @@ float intersectDist(in vec3 ro, in vec3 rd) {
 	return dist;
 }
 
+#define SS_K 15.0
 float getShadow(in vec3 pos, in vec3 toLight) {
-	float shadow    = 1.0;
-	float lightDist = distance(uLightP, pos);
+	float shadow = 1.0;
+	float lightDist = distance(uLightP,pos);
 
 	float t = EPS1;
 	float dt;
 
-	for(int i = 0; i < MAX_STEPS; ++i)
+	for(int i=0; i<MAX_STEPS; ++i)
 	{
 		dt = getDist(pos+(toLight*t)) * c_fSmooth;
 
@@ -318,7 +254,7 @@ float getShadow(in vec3 pos, in vec3 toLight) {
 
 		t += dt;
 
-		if(t > lightDist)
+		if (t > lightDist)
 			break;
 	}
 
@@ -328,18 +264,17 @@ float getShadow(in vec3 pos, in vec3 toLight) {
 #define AO_K      1.5
 #define AO_DELTA  0.2
 #define AO_N      5
-float getAO(in vec3 pos, in vec3 nor) {
+float getAO (in vec3 pos, in vec3 nor) {
 	float sum = 0.0;
 	float weight = 0.5;
 	float delta = AO_DELTA;
-
+	
 	for (int i=0; i<AO_N; ++i) {
 		sum += weight * (delta - getDist(pos+nor*delta));
-
+		
 		delta += AO_DELTA;
 		weight *= 0.5;
 	}
-
 	return clamp(1.0 - AO_K*sum, 0.0, 1.0);
 }
 
@@ -347,115 +282,65 @@ float getAO(in vec3 pos, in vec3 nor) {
 #define SSS_DELTA  0.3
 #define SSS_N      5
 float getSSS (in vec3 pos, in vec3 look) {
-	float sum    = 0.0;
+	float sum = 0.0;
 	float weight = -0.5;
-	float delta  = SSS_DELTA;
-
+	float delta = SSS_DELTA;
+	
 	for (int i=0; i<SSS_N; ++i) {
 		sum += weight * min(0.0, getDist(pos+look*delta));
-
+		
 		delta += delta;
 		weight *= 0.5;
 	}
-
 	return clamp(SSS_K*sum, 0.0, 1.0);
 }
 
-#define KA  0.1
-#define KD  0.9
-#define KR  0.3
+#define FX_DIFFUSE
+#define FX_REFLECTION
+#define FX_OCCLUSION
+
+#define KA 0.1
+#define KD 0.9
+#define KR 0.3
+
 vec3 rayMarch (in vec3 ro, in vec3 rd) {
+	float t = intersectDist(ro, rd);
 
-	#ifdef CHECK_BOUNDS
+	if (t > 0.0) {
+		vec3 pos = ro + rd*t;
+		vec3 nor = getNormal(pos-rd*EPS);
 
-	if (intersectBounds(ro, rd)) {
+		vec3 col = currCol;
+		float sss = currSSS;
 
-	#endif // CHECK_BOUNDS
+		#ifdef FX_DIFFUSE
 
-		#ifdef RENDER_STEPS
+		vec3 toLight = normalize(uLightP-pos);
+		float shadow = 1.0; 
+		col *= (KA + KD*max(dot(toLight,nor),0.0)*shadow);
 
-		int steps = intersectSteps(ro, rd);  
-		return vec3(float(MAX_STEPS-steps)/float(MAX_STEPS));
+		#endif
 
-		#else
+		#ifdef FX_OCCLUSION
 
-		float t = intersectDist(ro, rd);
+		float ao = getAO(pos, nor);
+		col *= ao;
 
-		if (t > 0.0) {
+		#endif
 
-			#ifdef RENDER_DIST
+		currHit = true;
+		currPos = pos;
+		currNor = nor;
 
-			const float maxDist = 20.0;
-			t = min(t, maxDist);
-			return vec3((maxDist-t)/maxDist);
-
-			#else
-
-			vec3 pos = ro + rd*t;
-			vec3 nor = getNormal(pos-rd*EPS);
-
-			vec3 col = currCol;
-			float sss = currSSS;
-
-			#ifdef FX_DIFFUSE
-
-			vec3 toLight = normalize(uLightP-pos);
-			float shadow = 1.0; 
-
-			#ifdef FX_SHADOW
-
-			shadow = getShadow(pos, toLight);
-
-			#endif // FX_SHADOW
-
-			col *= (KA + KD*max(dot(toLight,nor),0.0)*shadow);
-
-			#endif // FX_DIFFUSE
-
-			#ifdef FX_OCCLUSION
-
-			float ao = getAO(pos, nor);
-			col *= ao;
-
-			#endif // FX_OCCLUSION
-
-			#ifdef FX_SUBSURFACE
-
-			sss *= getSSS(pos, rd);
-			col *= 1.0-sss;
-
-			#endif // FX_SUBSURFACE
-
-			#ifdef FX_FOG
-
-			float fogAmount = exp(-0.05*t);
-			col *= fogAmount;
-
-			#endif // FX_FOG
-
-			currHit = true;
-			currPos = pos;
-			currNor = nor;
-
-			return col;
-
-			#endif // ENDER_DIST
-		}
-
-		#endif // RENDER_STEPS
-
-		currHit = false;
-
-	#ifdef CHECK_BOUNDS
-
+		return col;
 	}
 
-	#endif // CHECK_BOUNDS
+	currHit = false;
 
 	return vec3(0.0);
 }
 
-vec3 render(in vec3 ro, in vec3 rd) {
+vec3 render (in vec3 ro, in vec3 rd) {
 	vec3 col = rayMarch(ro, rd);
 
 	#ifdef FX_REFLECTION
@@ -465,7 +350,7 @@ vec3 render(in vec3 ro, in vec3 rd) {
 		col = col*(1.0-KR) + rayMarch(currPos+reflRay*EPS1, reflRay)*KR;
 	}
 
-	#endif // FX_REFLECTION
+	#endif
 
 	return col;
 }
@@ -477,17 +362,6 @@ void main(void) {
 
 	vec3 rd = normalize(C + (2.0*vUv.x-1.0)*ROOTTHREE*A + (2.0*vUv.y-1.0)*ROOTTHREE*B);
 	vec3 ro = uCamPos;
-
-	#ifdef FX_DITHER
-
-	float t = intersectDist(ro, rd);
-	vec2 uv = vUv;
-	float dither = t*t*c_fDither;
-	uv.x += rand(vUv+vec2(.12, .32))*dither - dither/2.0;
-	uv.y += rand(vUv+vec2(.42, .52))*dither - dither/2.0;
-	ro = uCamPos+C + (2.0*uv.x-1.0)*ROOTTHREE*A + (2.0*uv.y-1.0)*ROOTTHREE*B;
-
-	#endif // FX_DITHER
 
 	gl_FragColor.a = 1.0;
 	gl_FragColor.rgb = render(ro, rd);

@@ -1,7 +1,6 @@
 define([], function() {
-	if (Number.EPSILON === undefined) {
-		Number.EPSILON = Math.pow(2, -52);
-	}
+	Math.HALFPI = 1.5707963267948966;
+	Math.EPSILON = Math.pow(2, -52);
 
 	if (Math.sign === undefined) {
 		Math.sign = function (x) {

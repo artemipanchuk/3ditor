@@ -1,2758 +1,4699 @@
-define([
-	"classes/editor/structures/Color",
-	"classes/editor/structures/Frustum",
-	"classes/editor/renderers/webgl/WebGLExtensions",
-	"classes/editor/core/BufferGeometry",
-	"classes/editor/renderers/webgl/WebGLCapabilities",
-	"classes/editor/renderers/webgl/WebGLState",
-	"classes/editor/renderers/webgl/WebGLProperties",
-	"classes/editor/renderers/webgl/WebGLObjects",
-	"classes/editor/renderers/webgl/WebGLGeometries",
-	"classes/editor/renderers/webgl/WebGLPrograms",
-	"classes/editor/renderers/webgl/WebGLBufferRenderer",
-	"classes/editor/renderers/webgl/WebGLIndexedBufferRenderer",
-	"classes/editor/renderers/webgl/WebGLShadowMap",
-	"classes/editor/renderers/webgl/plugins/SpritePlugin",
-	"classes/editor/renderers/webgl/plugins/LensFlarePlugin"
-], function() {
-	this.WebGLRenderer = function() {
-		function WebGLRenderer(parameters) {
-			parameters = parameters || {};
+WebGLRenderer = function (parameters) {
+	parameters = parameters || {};
 
-			var _canvas = parameters.canvas !== undefined ? parameters.canvas : document.createElement('canvas'),
-			_context = parameters.context !== undefined ? parameters.context : null,
+	var _canvas = parameters.canvas !== undefined ? parameters.canvas : document.createElement('canvas'),
 
-			_width = _canvas.width,
-			_height = _canvas.height,
+	_precision = parameters.precision !== undefined ? parameters.precision : 'highp',
 
-			pixelRatio = 1,
+	_alpha = parameters.alpha !== undefined ? parameters.alpha : true,
+	_premultipliedAlpha = parameters.premultipliedAlpha !== undefined ? parameters.premultipliedAlpha : true,
+	_antialias = parameters.antialias !== undefined ? parameters.antialias : false,
+	_stencil = parameters.stencil !== undefined ? parameters.stencil : true,
+	_preserveDrawingBuffer = parameters.preserveDrawingBuffer !== undefined ? parameters.preserveDrawingBuffer : false,
 
-			_alpha = parameters.alpha !== undefined ? parameters.alpha : false,
-			_depth = parameters.depth !== undefined ? parameters.depth : true,
-			_stencil = parameters.stencil !== undefined ? parameters.stencil : true,
-			_antialias = parameters.antialias !== undefined ? parameters.antialias : false,
-			_premultipliedAlpha = parameters.premultipliedAlpha !== undefined ? parameters.premultipliedAlpha : true,
-			_preserveDrawingBuffer = parameters.preserveDrawingBuffer !== undefined ? parameters.preserveDrawingBuffer : false,
+	_clearColor = parameters.clearColor !== undefined ? new Color(parameters.clearColor) : new Color(0x000000),
+	_clearAlpha = parameters.clearAlpha !== undefined ? parameters.clearAlpha : 0,
 
-			_clearColor = new Color(0x000000),
-			_clearAlpha = 0;
+	_maxLights = parameters.maxLights !== undefined ? parameters.maxLights : 4;
 
-			var lights = [];
+	this.domElement = _canvas;
+	this.context = null;
 
-			var opaqueObjects = [];
-			var opaqueObjectsLastIndex = - 1;
-			var transparentObjects = [];
-			var transparentObjectsLastIndex = - 1;
+	this.autoClear = true;
+	this.autoClearColor = true;
+	this.autoClearDepth = true;
+	this.autoClearStencil = true;
 
-			var morphInfluences = new Float32Array(8);
+	this.sortObjects = true;
 
-			var sprites = [];
-			var lensFlares = [];
+	this.autoUpdateObjects = true;
+	this.autoUpdateScene = true;
 
-			this.domElement = _canvas;
-			this.context = null;
+	this.gammaInput = false;
+	this.gammaOutput = false;
+	this.physicallyBasedShading = false;
 
-			this.autoClear = true;
-			this.autoClearColor = true;
-			this.autoClearDepth = true;
-			this.autoClearStencil = true;
+	this.shadowMapEnabled = false;
+	this.shadowMapAutoUpdate = true;
+	this.shadowMapSoft = true;
+	this.shadowMapCullFrontFaces = true;
+	this.shadowMapDebug = false;
+	this.shadowMapCascade = false;
 
-			this.sortObjects = true;
+	this.maxMorphTargets = 8;
+	this.maxMorphNormals = 4;
 
-			this.gammaFactor = 2.0;
-			this.gammaInput = false;
-			this.gammaOutput = false;
+	this.autoScaleCubemaps = true;
 
-			this.maxMorphTargets = 8;
-			this.maxMorphNormals = 4;
+	this.renderPluginsPre = [];
+	this.renderPluginsPost = [];
 
-			this.autoScaleCubemaps = true;
+	this.info = {
+		memory: {
+			programs: 0,
+			geometries: 0,
+			textures: 0
+		},
 
-			var _this = this,
+		render: {
+			calls: 0,
+			vertices: 0,
+			faces: 0,
+			points: 0
+		}
+	};
 
-			_currentProgram = null,
-			_currentFramebuffer = null,
-			_currentMaterialId = - 1,
-			_currentGeometryProgram = '',
-			_currentCamera = null,
+	var _this = this,
 
-			_usedTextureUnits = 0,
+	_gl,
 
-			_viewportX = 0,
-			_viewportY = 0,
-			_viewportWidth = _canvas.width,
-			_viewportHeight = _canvas.height,
-			_currentWidth = 0,
-			_currentHeight = 0,
+	_programs = [],
 
-			_frustum = new Frustum(),
+	_currentProgram = null,
+	_currentFramebuffer = null,
+	_currentMaterialId = -1,
+	_currentGeometryGroupHash = null,
+	_currentCamera = null,
+	_geometryGroupCounter = 0,
 
-			_projScreenMatrix = new Matrix4(),
+	_oldDoubleSided = -1,
+	_oldFlipSided = -1,
 
-			_vector3 = new Vector3(),
+	_oldBlending = -1,
 
-			_direction = new Vector3(),
+	_oldBlendEquation = -1,
+	_oldBlendSrc = -1,
+	_oldBlendDst = -1,
 
-			_lightsNeedUpdate = true,
+	_oldDepthTest = -1,
+	_oldDepthWrite = -1,
 
-			_lights = {
-				ambient: [ 0, 0, 0 ],
-				directional: { length: 0, colors: [], positions: [] },
-				point: { length: 0, colors: [], positions: [], distances: [], decays: [] },
-				spot: { length: 0, colors: [], positions: [], distances: [], directions: [], anglesCos: [], exponents: [], decays: [] },
-				hemi: { length: 0, skyColors: [], groundColors: [], positions: [] }
-			},
+	_oldPolygonOffset = null,
+	_oldPolygonOffsetFactor = null,
+	_oldPolygonOffsetUnits = null,
 
-			_infoMemory = {
-				geometries: 0,
-				textures: 0
-			},
+	_oldLineWidth = null,
 
-			_infoRender = {
-				calls: 0,
-				vertices: 0,
-				faces: 0,
-				points: 0
-			};
+	_viewportX = 0,
+	_viewportY = 0,
+	_viewportWidth = 0,
+	_viewportHeight = 0,
+	_currentWidth = 0,
+	_currentHeight = 0,
 
-			this.info = {
-				render: _infoRender,
-				memory: _infoMemory,
-				programs: null
-			};
+	_frustum = new Frustum(),
 
+	_projScreenMatrix = new Matrix4(),
+	_projScreenMatrixPS = new Matrix4(),
 
-			// initialize
+	_vector3 = new Vector4(),
 
-			var _gl;
+	_direction = new Vector3(),
 
-			try {
-				var attributes = {
-					alpha: _alpha,
-					depth: _depth,
-					stencil: _stencil,
-					antialias: _antialias,
-					premultipliedAlpha: _premultipliedAlpha,
-					preserveDrawingBuffer: _preserveDrawingBuffer
-				};
+	_lightsNeedUpdate = true,
 
-				_gl = _context || _canvas.getContext('webgl', attributes) || _canvas.getContext('experimental-webgl', attributes);
+	_lights = {
+		ambient: [0, 0, 0],
+		directional: { length: 0, colors: new Array(), positions: new Array() },
+		point: { length: 0, colors: new Array(), positions: new Array(), distances: new Array() },
+		spot: { length: 0, colors: new Array(), positions: new Array(), distances: new Array(), directions: new Array(), angles: new Array(), exponents: new Array() }
+	};
 
-				if (_gl === null) {
-					if (_canvas.getContext('webgl') !== null) {
-						throw 'Error creating WebGL context with your selected attributes.';
-					} else {
-						throw 'Error creating WebGL context.';
-					}
+	_gl = initGL();
+
+	setDefaultGLState();
+
+	this.context = _gl;
+
+	var _maxVertexTextures = _gl.getParameter(_gl.MAX_VERTEX_TEXTURE_IMAGE_UNITS),
+	_maxTextureSize = _gl.getParameter(_gl.MAX_TEXTURE_SIZE),
+	_maxCubemapSize = _gl.getParameter(_gl.MAX_CUBE_MAP_TEXTURE_SIZE);
+
+	this.getContext = function () {
+		return _gl;
+	};
+
+	this.supportsVertexTextures = function () {
+		return _maxVertexTextures > 0;
+	};
+
+	this.setSize = function (width, height) {
+		_canvas.width = width;
+		_canvas.height = height;
+
+		this.setViewport(0, 0, _canvas.width, _canvas.height);
+	};
+
+	this.setViewport = function (x, y, width, height) {
+		_viewportX = x;
+		_viewportY = y;
+
+		_viewportWidth = width;
+		_viewportHeight = height;
+
+		_gl.viewport(_viewportX, _viewportY, _viewportWidth, _viewportHeight);
+	};
+
+	this.setScissor = function (x, y, width, height) {
+		_gl.scissor(x, y, width, height);
+	};
+
+	this.enableScissorTest = function (enable) {
+		enable ? _gl.enable(_gl.SCISSOR_TEST) : _gl.disable(_gl.SCISSOR_TEST);
+	};
+
+	this.setClearColorHex = function (hex, alpha) {
+		_clearColor.setHex(hex);
+		_clearAlpha = alpha;
+
+		_gl.clearColor(_clearColor.r, _clearColor.g, _clearColor.b, _clearAlpha);
+	};
+
+	this.setClearColor = function (color, alpha) {
+		_clearColor.copy(color);
+		_clearAlpha = alpha;
+
+		_gl.clearColor(_clearColor.r, _clearColor.g, _clearColor.b, _clearAlpha);
+	};
+
+	this.getClearColor = function () {
+		return _clearColor;
+	};
+
+	this.getClearAlpha = function () {
+		return _clearAlpha;
+	};
+
+	this.clear = function (color, depth, stencil) {
+		var bits = 0;
+
+		if (color === undefined || color) bits |= _gl.COLOR_BUFFER_BIT;
+		if (depth === undefined || depth) bits |= _gl.DEPTH_BUFFER_BIT;
+		if (stencil === undefined || stencil) bits |= _gl.STENCIL_BUFFER_BIT;
+
+		_gl.clear(bits);
+	};
+
+	this.clearTarget = function (renderTarget, color, depth, stencil) {
+		this.setRenderTarget(renderTarget);
+		this.clear(color, depth, stencil);
+	};
+
+	this.addPostPlugin = function (plugin) {
+		plugin.init(this);
+		this.renderPluginsPost.push(plugin);
+	};
+
+	this.addPrePlugin = function (plugin) {
+		plugin.init(this);
+		this.renderPluginsPre.push(plugin);
+	};
+
+	this.deallocateObject = function (object) {
+		if (! object.__webglInit) return;
+
+		object.__webglInit = false;
+
+		delete object._modelViewMatrix;
+		delete object._normalMatrix;
+
+		delete object._normalMatrixArray;
+		delete object._modelViewMatrixArray;
+		delete object._objectMatrixArray;
+
+		if (object instanceof Mesh) {
+			for (var g in object.geometry.geometryGroups) {
+				deleteMeshBuffers(object.geometry.geometryGroups[g]);
+			}
+		} else if (object instanceof Ribbon) {
+			deleteRibbonBuffers(object.geometry);
+		} else if (object instanceof Line) {
+			deleteLineBuffers(object.geometry);
+		} else if (object instanceof ParticleSystem) {
+			deleteParticleBuffers(object.geometry);
+		}
+	};
+
+	this.deallocateTexture = function (texture) {
+		if (! texture.__webglInit) return;
+
+		texture.__webglInit = false;
+		_gl.deleteTexture(texture.__webglTexture);
+
+		_this.info.memory.textures --;
+	};
+
+	this.deallocateRenderTarget = function (renderTarget) {
+		if (!renderTarget || ! renderTarget.__webglTexture) return;
+
+		_gl.deleteTexture(renderTarget.__webglTexture);
+
+		if (renderTarget instanceof WebGLRenderTargetCube) {
+			for (var i = 0; i < 6; i ++) {
+				_gl.deleteFramebuffer(renderTarget.__webglFramebuffer[i]);
+				_gl.deleteRenderbuffer(renderTarget.__webglRenderbuffer[i]);
+			}
+		} else {
+			_gl.deleteFramebuffer(renderTarget.__webglFramebuffer);
+			_gl.deleteRenderbuffer(renderTarget.__webglRenderbuffer);
+		}
+	};
+
+	this.updateShadowMap = function (scene, camera) {
+		_currentProgram = null;
+		_oldBlending = -1;
+		_oldDepthTest = -1;
+		_oldDepthWrite = -1;
+		_currentGeometryGroupHash = -1;
+		_currentMaterialId = -1;
+		_lightsNeedUpdate = true;
+		_oldDoubleSided = -1;
+		_oldFlipSided = -1;
+
+		this.shadowMapPlugin.update(scene, camera);
+	};
+
+	function createParticleBuffers (geometry) {
+		geometry.__webglVertexBuffer = _gl.createBuffer();
+		geometry.__webglColorBuffer = _gl.createBuffer();
+
+		_this.info.geometries ++;
+	};
+
+	function createLineBuffers (geometry) {
+		geometry.__webglVertexBuffer = _gl.createBuffer();
+		geometry.__webglColorBuffer = _gl.createBuffer();
+
+		_this.info.memory.geometries ++;
+	};
+
+	function createRibbonBuffers (geometry) {
+		geometry.__webglVertexBuffer = _gl.createBuffer();
+		geometry.__webglColorBuffer = _gl.createBuffer();
+
+		_this.info.memory.geometries ++;
+	};
+
+	function createMeshBuffers (geometryGroup) {
+		geometryGroup.__webglVertexBuffer = _gl.createBuffer();
+		geometryGroup.__webglNormalBuffer = _gl.createBuffer();
+		geometryGroup.__webglTangentBuffer = _gl.createBuffer();
+		geometryGroup.__webglColorBuffer = _gl.createBuffer();
+		geometryGroup.__webglUVBuffer = _gl.createBuffer();
+		geometryGroup.__webglUV2Buffer = _gl.createBuffer();
+
+		geometryGroup.__webglSkinVertexABuffer = _gl.createBuffer();
+		geometryGroup.__webglSkinVertexBBuffer = _gl.createBuffer();
+		geometryGroup.__webglSkinIndicesBuffer = _gl.createBuffer();
+		geometryGroup.__webglSkinWeightsBuffer = _gl.createBuffer();
+
+		geometryGroup.__webglFaceBuffer = _gl.createBuffer();
+		geometryGroup.__webglLineBuffer = _gl.createBuffer();
+
+		var m, ml;
+
+		if (geometryGroup.numMorphTargets) {
+			geometryGroup.__webglMorphTargetsBuffers = [];
+
+			for (m = 0, ml = geometryGroup.numMorphTargets; m < ml; m ++) {
+				geometryGroup.__webglMorphTargetsBuffers.push(_gl.createBuffer());
+			}
+		}
+
+		if (geometryGroup.numMorphNormals) {
+			geometryGroup.__webglMorphNormalsBuffers = [];
+
+			for (m = 0, ml = geometryGroup.numMorphNormals; m < ml; m ++) {
+				geometryGroup.__webglMorphNormalsBuffers.push(_gl.createBuffer());
+			}
+		}
+
+		_this.info.memory.geometries ++;
+	};
+
+	function deleteParticleBuffers (geometry) {
+		_gl.deleteBuffer(geometry.__webglVertexBuffer);
+		_gl.deleteBuffer(geometry.__webglColorBuffer);
+
+		_this.info.memory.geometries --;
+	};
+
+	function deleteLineBuffers (geometry) {
+		_gl.deleteBuffer(geometry.__webglVertexBuffer);
+		_gl.deleteBuffer(geometry.__webglColorBuffer);
+
+		_this.info.memory.geometries --;
+	};
+
+	function deleteRibbonBuffers (geometry) {
+		_gl.deleteBuffer(geometry.__webglVertexBuffer);
+		_gl.deleteBuffer(geometry.__webglColorBuffer);
+
+		_this.info.memory.geometries --;
+	};
+
+	function deleteMeshBuffers (geometryGroup) {
+		_gl.deleteBuffer(geometryGroup.__webglVertexBuffer);
+		_gl.deleteBuffer(geometryGroup.__webglNormalBuffer);
+		_gl.deleteBuffer(geometryGroup.__webglTangentBuffer);
+		_gl.deleteBuffer(geometryGroup.__webglColorBuffer);
+		_gl.deleteBuffer(geometryGroup.__webglUVBuffer);
+		_gl.deleteBuffer(geometryGroup.__webglUV2Buffer);
+
+		_gl.deleteBuffer(geometryGroup.__webglSkinVertexABuffer);
+		_gl.deleteBuffer(geometryGroup.__webglSkinVertexBBuffer);
+		_gl.deleteBuffer(geometryGroup.__webglSkinIndicesBuffer);
+		_gl.deleteBuffer(geometryGroup.__webglSkinWeightsBuffer);
+
+		_gl.deleteBuffer(geometryGroup.__webglFaceBuffer);
+		_gl.deleteBuffer(geometryGroup.__webglLineBuffer);
+
+		var m, ml;
+
+		if (geometryGroup.numMorphTargets) {
+			for (m = 0, ml = geometryGroup.numMorphTargets; m < ml; m ++) {
+				_gl.deleteBuffer(geometryGroup.__webglMorphTargetsBuffers[m]);
+			}
+		}
+
+		if (geometryGroup.numMorphNormals) {
+			for (m = 0, ml = geometryGroup.numMorphNormals; m < ml; m ++) {
+				_gl.deleteBuffer(geometryGroup.__webglMorphNormalsBuffers[m]);
+			}
+		}
+
+		if (geometryGroup.__webglCustomAttributesList) {
+			for (var id in geometryGroup.__webglCustomAttributesList) {
+				_gl.deleteBuffer(geometryGroup.__webglCustomAttributesList[id].buffer);
+			}
+		}
+
+		_this.info.memory.geometries --;
+	};
+
+	function initCustomAttributes (geometry, object) {
+		var nvertices = geometry.vertices.length;
+
+		var material = object.material;
+
+		if (material.attributes) {
+			if (geometry.__webglCustomAttributesList === undefined) {
+				geometry.__webglCustomAttributesList = [];
+			}
+
+			for (var a in material.attributes) {
+				var attribute = material.attributes[a];
+
+				if(!attribute.__webglInitialized || attribute.createUniqueBuffers) {
+					attribute.__webglInitialized = true;
+
+					var size = 1;
+
+					if (attribute.type === "v2") size = 2;
+					else if (attribute.type === "v3") size = 3;
+					else if (attribute.type === "v4") size = 4;
+					else if (attribute.type === "c" ) size = 3;
+
+					attribute.size = size;
+
+					attribute.array = new Float32Array(nvertices * size);
+
+					attribute.buffer = _gl.createBuffer();
+					attribute.buffer.belongsToAttribute = a;
+
+					attribute.needsUpdate = true;
 				}
 
-				_canvas.addEventListener('webglcontextlost', onContextLost, false);
-			} catch (error) {
-				console.error('WebGLRenderer: ' + error);
+				geometry.__webglCustomAttributesList.push(attribute);
+			}
+		}
+	};
+
+	function initParticleBuffers (geometry, object) {
+		var nvertices = geometry.vertices.length;
+
+		geometry.__vertexArray = new Float32Array(nvertices * 3);
+		geometry.__colorArray = new Float32Array(nvertices * 3);
+
+		geometry.__sortArray = [];
+
+		geometry.__webglParticleCount = nvertices;
+
+		initCustomAttributes (geometry, object);
+	};
+
+	function initLineBuffers (geometry, object) {
+		var nvertices = geometry.vertices.length;
+
+		geometry.__vertexArray = new Float32Array(nvertices * 3);
+		geometry.__colorArray = new Float32Array(nvertices * 3);
+
+		geometry.__webglLineCount = nvertices;
+
+		initCustomAttributes (geometry, object);
+	};
+
+	function initRibbonBuffers (geometry) {
+		var nvertices = geometry.vertices.length;
+
+		geometry.__vertexArray = new Float32Array(nvertices * 3);
+		geometry.__colorArray = new Float32Array(nvertices * 3);
+
+		geometry.__webglVertexCount = nvertices;
+	};
+
+	function initMeshBuffers (geometryGroup, object) {
+		var geometry = object.geometry,
+			faces3 = geometryGroup.faces3,
+			faces4 = geometryGroup.faces4,
+
+			nvertices = faces3.length * 3 + faces4.length * 4,
+			ntris     = faces3.length * 1 + faces4.length * 2,
+			nlines    = faces3.length * 3 + faces4.length * 4,
+
+			material = getBufferMaterial(object, geometryGroup),
+
+			uvType = bufferGuessUVType(material),
+			normalType = bufferGuessNormalType(material),
+			vertexColorType = bufferGuessVertexColorType(material);
+
+		geometryGroup.__vertexArray = new Float32Array(nvertices * 3);
+
+		if (normalType) {
+			geometryGroup.__normalArray = new Float32Array(nvertices * 3);
+		}
+
+		if (geometry.hasTangents) {
+			geometryGroup.__tangentArray = new Float32Array(nvertices * 4);
+		}
+
+		if (vertexColorType) {
+			geometryGroup.__colorArray = new Float32Array(nvertices * 3);
+		}
+
+		if (uvType) {
+			if (geometry.faceUvs.length > 0 || geometry.faceVertexUvs.length > 0) {
+				geometryGroup.__uvArray = new Float32Array(nvertices * 2);
 			}
 
-			var extensions = new WebGLExtensions(_gl);
+			if (geometry.faceUvs.length > 1 || geometry.faceVertexUvs.length > 1) {
+				geometryGroup.__uv2Array = new Float32Array(nvertices * 2);
+			}
+		}
 
-			extensions.get('OES_texture_float');
-			extensions.get('OES_texture_float_linear');
-			extensions.get('OES_texture_half_float');
-			extensions.get('OES_texture_half_float_linear');
-			extensions.get('OES_standard_derivatives');
-			extensions.get('ANGLE_instanced_arrays');
+		if (object.geometry.skinWeights.length && object.geometry.skinIndices.length) {
+			geometryGroup.__skinVertexAArray = new Float32Array(nvertices * 4);
+			geometryGroup.__skinVertexBArray = new Float32Array(nvertices * 4);
+			geometryGroup.__skinIndexArray = new Float32Array(nvertices * 4);
+			geometryGroup.__skinWeightArray = new Float32Array(nvertices * 4);
+		}
 
-			if (extensions.get('OES_element_index_uint')) {
-				BufferGeometry.MaxIndex = 4294967296;
+		geometryGroup.__faceArray = new Uint16Array(ntris * 3);
+		geometryGroup.__lineArray = new Uint16Array(nlines * 2);
+
+		var m, ml;
+
+		if (geometryGroup.numMorphTargets) {
+			geometryGroup.__morphTargetsArrays = [];
+
+			for (m = 0, ml = geometryGroup.numMorphTargets; m < ml; m ++) {
+				geometryGroup.__morphTargetsArrays.push(new Float32Array(nvertices * 3));
+			}
+		}
+
+		if (geometryGroup.numMorphNormals) {
+			geometryGroup.__morphNormalsArrays = [];
+
+			for (m = 0, ml = geometryGroup.numMorphNormals; m < ml; m ++) {
+				geometryGroup.__morphNormalsArrays.push(new Float32Array(nvertices * 3));
+			}
+		}
+
+		geometryGroup.__webglFaceCount = ntris * 3;
+		geometryGroup.__webglLineCount = nlines * 2;
+
+		if (material.attributes) {
+			if (geometryGroup.__webglCustomAttributesList === undefined) {
+				geometryGroup.__webglCustomAttributesList = [];
 			}
 
-			var capabilities = new WebGLCapabilities(_gl, extensions, parameters);
+			for (var a in material.attributes) {
+				var originalAttribute = material.attributes[a];
 
-			var state = new WebGLState(_gl, extensions, paramoGL);
-			var properties = new WebGLProperties();
-			var objects = new WebGLObjects(_gl, properties, this.info);
-			var programCache = new WebGLPrograms(this, capabilities);
+				var attribute = {};
 
-			this.info.programs = programCache.programs;
-
-			var bufferRenderer = new WebGLBufferRenderer(_gl, extensions, _infoRender);
-			var indexedBufferRenderer = new WebGLIndexedBufferRenderer(_gl, extensions, _infoRender);
-
-			//
-
-			function glClearColor(r, g, b, a) {
-				if (_premultipliedAlpha === true) {
-					r *= a; g *= a; b *= a;
+				for (var property in originalAttribute) {
+					attribute[property] = originalAttribute[property];
 				}
 
-				_gl.clearColor(r, g, b, a);
-			}
+				if(!attribute.__webglInitialized || attribute.createUniqueBuffers) {
+					attribute.__webglInitialized = true;
 
-			function setDefaultGLState() {
-				state.init();
+					var size = 1;
 
-				_gl.viewport(_viewportX, _viewportY, _viewportWidth, _viewportHeight);
+					if(attribute.type === "v2") size = 2;
+					else if(attribute.type === "v3") size = 3;
+					else if(attribute.type === "v4") size = 4;
+					else if(attribute.type === "c" ) size = 3;
 
-				glClearColor(_clearColor.r, _clearColor.g, _clearColor.b, _clearAlpha);
-			}
+					attribute.size = size;
 
-			function resetGLState() {
-				_currentProgram = null;
-				_currentCamera = null;
+					attribute.array = new Float32Array(nvertices * size);
 
-				_currentGeometryProgram = '';
-				_currentMaterialId = - 1;
+					attribute.buffer = _gl.createBuffer();
+					attribute.buffer.belongsToAttribute = a;
 
-				_lightsNeedUpdate = true;
-
-				state.reset();
-			}
-
-			setDefaultGLState();
-
-			this.context = _gl;
-			this.capabilities = capabilities;
-			this.extensions = extensions;
-			this.state = state;
-
-			// shadow map
-
-			var shadowMap = new WebGLShadowMap(this, lights, objects);
-
-			this.shadowMap = shadowMap;
-
-
-			// Plugins
-
-			var spritePlugin = new SpritePlugin(this, sprites);
-			var lensFlarePlugin = new LensFlarePlugin(this, lensFlares);
-
-			// API
-
-			this.getContext = function () {
-				return _gl;
-			};
-
-			this.getContextAttributes = function () {
-				return _gl.getContextAttributes();
-			};
-
-			this.forceContextLoss = function () {
-				extensions.get('WEBGL_lose_context').loseContext();
-			};
-
-			this.getMaxAnisotropy = (function () {
-				var value;
-
-				return function getMaxAnisotropy() {
-					if (value !== undefined) return value;
-
-					var extension = extensions.get('EXT_texture_filter_anisotropic');
-
-					if (extension !== null) {
-						value = _gl.getParameter(extension.MAX_TEXTURE_MAX_ANISOTROPY_EXT);
-					} else {
-						value = 0;
-					}
-
-					return value;
-				}
-			})();
-
-			this.getPrecision = function () {
-				return capabilities.precision;
-			};
-
-			this.getPixelRatio = function () {
-				return pixelRatio;
-			};
-
-			this.setPixelRatio = function (value) {
-				if (value !== undefined) pixelRatio = value;
-			};
-
-			this.getSize = function () {
-				return {
-					width: _width,
-					height: _height
-				};
-			};
-
-			this.setSize = function (width, height, updateStyle) {
-				_width = width;
-				_height = height;
-
-				_canvas.width = width * pixelRatio;
-				_canvas.height = height * pixelRatio;
-
-				if (updateStyle !== false) {
-					_canvas.style.width = width + 'px';
-					_canvas.style.height = height + 'px';
+					originalAttribute.needsUpdate = true;
+					attribute.__original = originalAttribute;
 				}
 
-				this.setViewport(0, 0, width, height);
-			};
+				geometryGroup.__webglCustomAttributesList.push(attribute);
+			}
+		}
 
-			this.setViewport = function (x, y, width, height) {
-				_viewportX = x * pixelRatio;
-				_viewportY = y * pixelRatio;
+		geometryGroup.__inittedArrays = true;
+	};
 
-				_viewportWidth = width * pixelRatio;
-				_viewportHeight = height * pixelRatio;
+	function getBufferMaterial(object, geometryGroup) {
+		if (object.material && ! (object.material instanceof MeshFaceMaterial)) {
+			return object.material;
+		} else if (geometryGroup.materialIndex >= 0) {
+			return object.geometry.materials[geometryGroup.materialIndex];
+		}
+	};
 
-				_gl.viewport(_viewportX, _viewportY, _viewportWidth, _viewportHeight);
-			};
+	function materialNeedsSmoothNormals (material) {
+		return material && material.shading !== undefined && material.shading === SmoothShading;
+	};
 
-			this.getViewport = function (dimensions) {
-				dimensions.x = _viewportX / pixelRatio;
-				dimensions.y = _viewportY / pixelRatio;
+	function bufferGuessNormalType (material) {
+		if ((material instanceof MeshBasicMaterial && !material.envMap) || material instanceof MeshDepthMaterial) {
+			return false;
+		}
 
-				dimensions.z = _viewportWidth / pixelRatio;
-				dimensions.w = _viewportHeight / pixelRatio;
-			};
+		if (materialNeedsSmoothNormals(material)) {
+			return SmoothShading;
+		} else {
+			return FlatShading;
+		}
+	};
 
-			this.setScissor = function (x, y, width, height) {
-				_gl.scissor(
-					x * pixelRatio,
-					y * pixelRatio,
-					width * pixelRatio,
-					height * pixelRatio
-				);
-			};
+	function bufferGuessVertexColorType (material) {
+		if (material.vertexColors) {
+			return material.vertexColors;
+		}
 
-			this.enableScissorTest = function (boolean) {
-				state.setScissorTest(boolean);
-			};
+		return false;
+	};
 
-			// Clearing
+	function bufferGuessUVType (material) {
+		if (material.map || material.lightMap || material instanceof ShaderMaterial) {
+			return true;
+		}
 
-			this.getClearColor = function () {
-				return _clearColor;
-			};
+		return false;
+	};
 
-			this.setClearColor = function (color, alpha) {
-				_clearColor.set(color);
+	function setParticleBuffers (geometry, hint, object) {
+		var v, c, vertex, offset, index, color,
 
-				_clearAlpha = alpha !== undefined ? alpha : 1;
+		vertices = geometry.vertices,
+		vl = vertices.length,
 
-				glClearColor(_clearColor.r, _clearColor.g, _clearColor.b, _clearAlpha);
-			};
+		colors = geometry.colors,
+		cl = colors.length,
 
-			this.getClearAlpha = function () {
-				return _clearAlpha;
-			};
+		vertexArray = geometry.__vertexArray,
+		colorArray = geometry.__colorArray,
 
-			this.setClearAlpha = function (alpha) {
-				_clearAlpha = alpha;
+		sortArray = geometry.__sortArray,
 
-				glClearColor(_clearColor.r, _clearColor.g, _clearColor.b, _clearAlpha);
-			};
+		dirtyVertices = geometry.verticesNeedUpdate,
+		dirtyElements = geometry.elementsNeedUpdate,
+		dirtyColors = geometry.colorsNeedUpdate,
 
-			this.clear = function (color, depth, stencil) {
-				var bits = 0;
+		customAttributes = geometry.__webglCustomAttributesList,
+		i, il,
+		a, ca, cal, value,
+		customAttribute;
 
-				if (color === undefined || color) bits |= _gl.COLOR_BUFFER_BIT;
-				if (depth === undefined || depth) bits |= _gl.DEPTH_BUFFER_BIT;
-				if (stencil === undefined || stencil) bits |= _gl.STENCIL_BUFFER_BIT;
+		if (object.sortParticles) {
+			_projScreenMatrixPS.copy(_projScreenMatrix);
+			_projScreenMatrixPS.multiplySelf(object.matrixWorld);
 
-				_gl.clear(bits);
-			};
+			for (v = 0; v < vl; v ++) {
+				vertex = vertices[v];
 
-			this.clearColor = function () {
-				_gl.clear(_gl.COLOR_BUFFER_BIT);
-			};
+				_vector3.copy(vertex);
+				_projScreenMatrixPS.multiplyVector3(_vector3);
 
-			this.clearDepth = function () {
-				_gl.clear(_gl.DEPTH_BUFFER_BIT);
-			};
-
-			this.clearStencil = function () {
-				_gl.clear(_gl.STENCIL_BUFFER_BIT);
-			};
-
-			this.clearTarget = function (renderTarget, color, depth, stencil) {
-				this.setRenderTarget(renderTarget);
-				this.clear(color, depth, stencil);
-			};
-
-			// Reset
-
-			this.resetGLState = resetGLState;
-
-			this.dispose = function() {
-				_canvas.removeEventListener('webglcontextlost', onContextLost, false);
-			};
-
-			// Events
-
-			function onContextLost(event) {
-				event.preventDefault();
-
-				resetGLState();
-				setDefaultGLState();
-
-				properties.clear();
-			};
-
-			function onTextureDispose(event) {
-				var texture = event.target;
-
-				texture.removeEventListener('dispose', onTextureDispose);
-
-				deallocateTexture(texture);
-
-				_infoMemory.textures --;
+				sortArray[v] = [_vector3.z, v];
 			}
 
-			function onRenderTargetDispose(event) {
-				var renderTarget = event.target;
+			sortArray.sort(function(a, b) { return b[0] - a[0]; });
 
-				renderTarget.removeEventListener('dispose', onRenderTargetDispose);
+			for (v = 0; v < vl; v ++) {
+				vertex = vertices[sortArray[v][1]];
 
-				deallocateRenderTarget(renderTarget);
+				offset = v * 3;
 
-				_infoMemory.textures --;
+				vertexArray[offset]     = vertex.x;
+				vertexArray[offset + 1] = vertex.y;
+				vertexArray[offset + 2] = vertex.z;
 			}
 
-			function onMaterialDispose(event) {
-				var material = event.target;
+			for (c = 0; c < cl; c ++) {
+				offset = c * 3;
 
-				material.removeEventListener('dispose', onMaterialDispose);
+				color = colors[sortArray[c][1]];
 
-				deallocateMaterial(material);
+				colorArray[offset]     = color.r;
+				colorArray[offset + 1] = color.g;
+				colorArray[offset + 2] = color.b;
 			}
 
-			function deallocateTexture(texture) {
-				var textureProperties = properties.get(texture);
+			if (customAttributes) {
+				for (i = 0, il = customAttributes.length; i < il; i ++) {
+					customAttribute = customAttributes[i];
 
-				if (texture.image && textureProperties.__image__webglTextureCube) {
-					_gl.deleteTexture(textureProperties.__image__webglTextureCube);
-				} else {
-					if (textureProperties.__webglInit === undefined) return;
+					if (! (customAttribute.boundTo === undefined || customAttribute.boundTo === "vertices")) continue;
 
-					_gl.deleteTexture(textureProperties.__webglTexture);
-				}
+					offset = 0;
 
-				properties.delete(texture);
-			}
+					cal = customAttribute.value.length;
 
-			function deallocateRenderTarget(renderTarget) {
-				var renderTargetProperties = properties.get(renderTarget);
-				var textureProperties = properties.get(renderTarget.texture);
+					if (customAttribute.size === 1) {
+						for (ca = 0; ca < cal; ca ++) {
+							index = sortArray[ca][1];
 
-				if (! renderTarget || textureProperties.__webglTexture === undefined) return;
-
-				_gl.deleteTexture(textureProperties.__webglTexture);
-
-				if (renderTarget instanceof WebGLRenderTargetCube) {
-					for (var i = 0; i < 6; i ++) {
-						_gl.deleteFramebuffer(renderTargetProperties.__webglFramebuffer[ i ]);
-						_gl.deleteRenderbuffer(renderTargetProperties.__webglRenderbuffer[ i ]);
-					}
-				} else {
-					_gl.deleteFramebuffer(renderTargetProperties.__webglFramebuffer);
-					_gl.deleteRenderbuffer(renderTargetProperties.__webglRenderbuffer);
-				}
-
-				properties.delete(renderTarget.texture);
-				properties.delete(renderTarget);
-			}
-
-			function deallocateMaterial(material) {
-				releaseMaterialProgramReference(material);
-
-				properties.delete(material);
-			}
-
-
-			function releaseMaterialProgramReference(material) {
-				var programInfo = properties.get(material).program;
-
-				material.program = undefined;
-
-				if (programInfo !== undefined) {
-					programCache.releaseProgram(programInfo);
-				}
-			}
-
-			// Buffer rendering
-
-			this.renderBufferImmediate = function (object, program, material) {
-				state.initAttributes();
-
-				var buffers = properties.get(object);
-
-				if (object.hasPositions && ! buffers.position) buffers.position = _gl.createBuffer();
-				if (object.hasNormals && ! buffers.normal) buffers.normal = _gl.createBuffer();
-				if (object.hasUvs && ! buffers.uv) buffers.uv = _gl.createBuffer();
-				if (object.hasColors && ! buffers.color) buffers.color = _gl.createBuffer();
-
-				var attributes = program.getAttributes();
-
-				if (object.hasPositions) {
-					_gl.bindBuffer(_gl.ARRAY_BUFFER, buffers.position);
-					_gl.bufferData(_gl.ARRAY_BUFFER, object.positionArray, _gl.DYNAMIC_DRAW);
-
-					state.enableAttribute(attributes.position);
-					_gl.vertexAttribPointer(attributes.position, 3, _gl.FLOAT, false, 0, 0);
-				}
-
-				if (object.hasNormals) {
-					_gl.bindBuffer(_gl.ARRAY_BUFFER, buffers.normal);
-
-					if (material.type !== 'MeshPhongMaterial' && material.shading === FlatShading) {
-						for (var i = 0, l = object.count * 3; i < l; i += 9) {
-							var array = object.normalArray;
-
-							var nx = (array[ i + 0 ] + array[ i + 3 ] + array[ i + 6 ]) / 3;
-							var ny = (array[ i + 1 ] + array[ i + 4 ] + array[ i + 7 ]) / 3;
-							var nz = (array[ i + 2 ] + array[ i + 5 ] + array[ i + 8 ]) / 3;
-
-							array[ i + 0 ] = nx;
-							array[ i + 1 ] = ny;
-							array[ i + 2 ] = nz;
-
-							array[ i + 3 ] = nx;
-							array[ i + 4 ] = ny;
-							array[ i + 5 ] = nz;
-
-							array[ i + 6 ] = nx;
-							array[ i + 7 ] = ny;
-							array[ i + 8 ] = nz;
+							customAttribute.array[ca] = customAttribute.value[index];
 						}
-					}
+					} else if (customAttribute.size === 2) {
+						for (ca = 0; ca < cal; ca ++) {
+							index = sortArray[ca][1];
 
-					_gl.bufferData(_gl.ARRAY_BUFFER, object.normalArray, _gl.DYNAMIC_DRAW);
+							value = customAttribute.value[index];
 
-					state.enableAttribute(attributes.normal);
+							customAttribute.array[offset] 	= value.x;
+							customAttribute.array[offset + 1] = value.y;
 
-					_gl.vertexAttribPointer(attributes.normal, 3, _gl.FLOAT, false, 0, 0);
-				}
+							offset += 2;
+						}
+					} else if (customAttribute.size === 3) {
+						if (customAttribute.type === "c") {
+							for (ca = 0; ca < cal; ca ++) {
+								index = sortArray[ca][1];
 
-				if (object.hasUvs && material.map) {
-					_gl.bindBuffer(_gl.ARRAY_BUFFER, buffers.uv);
-					_gl.bufferData(_gl.ARRAY_BUFFER, object.uvArray, _gl.DYNAMIC_DRAW);
+								value = customAttribute.value[index];
 
-					state.enableAttribute(attributes.uv);
+								customAttribute.array[offset]     = value.r;
+								customAttribute.array[offset + 1] = value.g;
+								customAttribute.array[offset + 2] = value.b;
 
-					_gl.vertexAttribPointer(attributes.uv, 2, _gl.FLOAT, false, 0, 0);
-				}
-
-				if (object.hasColors && material.vertexColors !== NoColors) {
-					_gl.bindBuffer(_gl.ARRAY_BUFFER, buffers.color);
-					_gl.bufferData(_gl.ARRAY_BUFFER, object.colorArray, _gl.DYNAMIC_DRAW);
-
-					state.enableAttribute(attributes.color);
-
-					_gl.vertexAttribPointer(attributes.color, 3, _gl.FLOAT, false, 0, 0);
-				}
-
-				state.disableUnusedAttributes();
-
-				_gl.drawArrays(_gl.TRIANGLES, 0, object.count);
-
-				object.count = 0;
-			};
-
-			this.renderBufferDirect = function (camera, lights, fog, geometry, material, object, group) {
-				setMaterial(material);
-
-				var program = setProgram(camera, lights, fog, material, object);
-
-				var updateBuffers = false;
-				var geometryProgram = geometry.id + '_' + program.id + '_' + material.wireframe;
-
-				if (geometryProgram !== _currentGeometryProgram) {
-					_currentGeometryProgram = geometryProgram;
-					updateBuffers = true;
-				}
-
-				// morph targets
-
-				var morphTargetInfluences = object.morphTargetInfluences;
-
-				if (morphTargetInfluences !== undefined) {
-					var activeInfluences = [];
-
-					for (var i = 0, l = morphTargetInfluences.length; i < l; i ++) {
-						var influence = morphTargetInfluences[ i ];
-						activeInfluences.push([ influence, i ]);
-					}
-
-					activeInfluences.sort(numericalSort);
-
-					if (activeInfluences.length > 8) {
-						activeInfluences.length = 8;
-					}
-
-					var morphAttributes = geometry.morphAttributes;
-
-					for (var i = 0, l = activeInfluences.length; i < l; i ++) {
-						var influence = activeInfluences[ i ];
-						morphInfluences[ i ] = influence[ 0 ];
-
-						if (influence[ 0 ] !== 0) {
-							var index = influence[ 1 ];
-
-							if (material.morphTargets === true && morphAttributes.position) geometry.addAttribute('morphTarget' + i, morphAttributes.position[ index ]);
-							if (material.morphNormals === true && morphAttributes.normal) geometry.addAttribute('morphNormal' + i, morphAttributes.normal[ index ]);
+								offset += 3;
+							}
 						} else {
-							if (material.morphTargets === true) geometry.removeAttribute('morphTarget' + i);
-							if (material.morphNormals === true) geometry.removeAttribute('morphNormal' + i);
+							for (ca = 0; ca < cal; ca ++) {
+								index = sortArray[ca][1];
+
+								value = customAttribute.value[index];
+
+								customAttribute.array[offset] 	= value.x;
+								customAttribute.array[offset + 1] = value.y;
+								customAttribute.array[offset + 2] = value.z;
+
+								offset += 3;
+							}
+						}
+					} else if (customAttribute.size === 4) {
+						for (ca = 0; ca < cal; ca ++) {
+							index = sortArray[ca][1];
+
+							value = customAttribute.value[index];
+
+							customAttribute.array[offset]      = value.x;
+							customAttribute.array[offset + 1 ] = value.y;
+							customAttribute.array[offset + 2 ] = value.z;
+							customAttribute.array[offset + 3 ] = value.w;
+
+							offset += 4;
 						}
 					}
-
-					var uniforms = program.getUniforms();
-
-					if (uniforms.morphTargetInfluences !== null) {
-						_gl.uniform1fv(uniforms.morphTargetInfluences, morphInfluences);
-					}
-
-					updateBuffers = true;
 				}
+			}
+		} else {
+			if (dirtyVertices) {
+				for (v = 0; v < vl; v ++) {
+					vertex = vertices[v];
 
-				//
+					offset = v * 3;
 
-				var index = geometry.index;
-				var position = geometry.attributes.position;
-
-				if (material.wireframe === true) {
-					index = objects.getWireframeAttribute(geometry);
+					vertexArray[offset]     = vertex.x;
+					vertexArray[offset + 1] = vertex.y;
+					vertexArray[offset + 2] = vertex.z;
 				}
+			}
 
-				var renderer;
+			if (dirtyColors) {
+				for (c = 0; c < cl; c ++) {
+					color = colors[c];
 
-				if (index !== null) {
-					renderer = indexedBufferRenderer;
-					renderer.setIndex(index);
-				} else {
-					renderer = bufferRenderer;
+					offset = c * 3;
+
+					colorArray[offset]     = color.r;
+					colorArray[offset + 1] = color.g;
+					colorArray[offset + 2] = color.b;
 				}
+			}
 
-				if (updateBuffers) {
-					setupVertexAttributes(material, program, geometry);
+			if (customAttributes) {
+				for (i = 0, il = customAttributes.length; i < il; i ++) {
+					customAttribute = customAttributes[i];
 
-					if (index !== null) {
-						_gl.bindBuffer(_gl.ELEMENT_ARRAY_BUFFER, objects.getAttributeBuffer(index));
-					}
-				}
+					if (customAttribute.needsUpdate &&
+						 (customAttribute.boundTo === undefined ||
+						   customAttribute.boundTo === "vertices")) {
+						cal = customAttribute.value.length;
 
-				//
+						offset = 0;
 
-				var dataStart = 0;
-				var dataCount = Infinity;
+						if (customAttribute.size === 1) {
+							for (ca = 0; ca < cal; ca ++) {
+								customAttribute.array[ca] = customAttribute.value[ca];
+							}
+						} else if (customAttribute.size === 2) {
+							for (ca = 0; ca < cal; ca ++) {
+								value = customAttribute.value[ca];
 
-				if (index !== null) {
-					dataCount = index.count
-				} else if (position !== undefined) {
-					dataCount = position.count;
-				}
+								customAttribute.array[offset] 	= value.x;
+								customAttribute.array[offset + 1] = value.y;
 
-				var rangeStart = geometry.drawRange.start;
-				var rangeCount = geometry.drawRange.count;
+								offset += 2;
+							}
+						} else if (customAttribute.size === 3) {
+							if (customAttribute.type === "c") {
+								for (ca = 0; ca < cal; ca ++) {
+									value = customAttribute.value[ca];
 
-				var groupStart = group !== null ? group.start : 0;
-				var groupCount = group !== null ? group.count : Infinity;
+									customAttribute.array[offset] 	= value.r;
+									customAttribute.array[offset + 1] = value.g;
+									customAttribute.array[offset + 2] = value.b;
 
-				var drawStart = Math.max(dataStart, rangeStart, groupStart);
-				var drawEnd = Math.min(dataStart + dataCount, rangeStart + rangeCount, groupStart + groupCount) - 1;
-
-				var drawCount = Math.max(0, drawEnd - drawStart + 1);
-
-				//
-
-				if (object instanceof Mesh) {
-					if (material.wireframe === true) {
-						state.setLineWidth(material.wireframeLinewidth * pixelRatio);
-						renderer.setMode(_gl.LINES);
-					} else {
-						renderer.setMode(_gl.TRIANGLES);
-					}
-
-					if (geometry instanceof InstancedBufferGeometry && geometry.maxInstancedCount > 0) {
-						renderer.renderInstances(geometry);
-					} else {
-						renderer.render(drawStart, drawCount);
-					}
-				} else if (object instanceof Line) {
-					var lineWidth = material.linewidth;
-
-					if (lineWidth === undefined) lineWidth = 1; // Not using Line*Material
-
-					state.setLineWidth(lineWidth * pixelRatio);
-
-					if (object instanceof LineSegments) {
-						renderer.setMode(_gl.LINES);
-					} else {
-						renderer.setMode(_gl.LINE_STRIP);
-					}
-
-					renderer.render(drawStart, drawCount);
-				} else if (object instanceof Points) {
-					renderer.setMode(_gl.POINTS);
-					renderer.render(drawStart, drawCount);
-				}
-			};
-
-			function setupVertexAttributes(material, program, geometry, startIndex) {
-				var extension;
-
-				if (geometry instanceof InstancedBufferGeometry) {
-					extension = extensions.get('ANGLE_instanced_arrays');
-
-					if (extension === null) {
-						console.error('WebGLRenderer.setupVertexAttributes: using InstancedBufferGeometry but hardware does not support extension ANGLE_instanced_arrays.');
-						return;
-					}
-				}
-
-				if (startIndex === undefined) startIndex = 0;
-
-				state.initAttributes();
-
-				var geometryAttributes = geometry.attributes;
-
-				var programAttributes = program.getAttributes();
-
-				var materialDefaultAttributeValues = material.defaultAttributeValues;
-
-				for (var name in programAttributes) {
-					var programAttribute = programAttributes[ name ];
-
-					if (programAttribute >= 0) {
-						var geometryAttribute = geometryAttributes[ name ];
-
-						if (geometryAttribute !== undefined) {
-							var size = geometryAttribute.itemSize;
-							var buffer = objects.getAttributeBuffer(geometryAttribute);
-
-							if (geometryAttribute instanceof InterleavedBufferAttribute) {
-								var data = geometryAttribute.data;
-								var stride = data.stride;
-								var offset = geometryAttribute.offset;
-
-								if (data instanceof InstancedInterleavedBuffer) {
-									state.enableAttributeAndDivisor(programAttribute, data.meshPerAttribute, extension);
-
-									if (geometry.maxInstancedCount === undefined) {
-										geometry.maxInstancedCount = data.meshPerAttribute * data.count;
-									}
-								} else {
-									state.enableAttribute(programAttribute);
+									offset += 3;
 								}
-
-								_gl.bindBuffer(_gl.ARRAY_BUFFER, buffer);
-								_gl.vertexAttribPointer(programAttribute, size, _gl.FLOAT, false, stride * data.array.BYTES_PER_ELEMENT, (startIndex * stride + offset) * data.array.BYTES_PER_ELEMENT);
 							} else {
-								if (geometryAttribute instanceof InstancedBufferAttribute) {
-									state.enableAttributeAndDivisor(programAttribute, geometryAttribute.meshPerAttribute, extension);
+								for (ca = 0; ca < cal; ca ++) {
+									value = customAttribute.value[ca];
 
-									if (geometry.maxInstancedCount === undefined) {
-										geometry.maxInstancedCount = geometryAttribute.meshPerAttribute * geometryAttribute.count;
-									}
-								} else {
-									state.enableAttribute(programAttribute);
+									customAttribute.array[offset] 	= value.x;
+									customAttribute.array[offset + 1] = value.y;
+									customAttribute.array[offset + 2] = value.z;
+
+									offset += 3;
 								}
-
-								_gl.bindBuffer(_gl.ARRAY_BUFFER, buffer);
-								_gl.vertexAttribPointer(programAttribute, size, _gl.FLOAT, false, 0, startIndex * size * 4); // 4 bytes per Float32
 							}
-						} else if (materialDefaultAttributeValues !== undefined) {
-							var value = materialDefaultAttributeValues[ name ];
+						} else if (customAttribute.size === 4) {
+							for (ca = 0; ca < cal; ca ++) {
+								value = customAttribute.value[ca];
 
-							if (value !== undefined) {
-								switch (value.length) {
-									case 2:
-										_gl.vertexAttrib2fv(programAttribute, value);
-										break;
+								customAttribute.array[offset]      = value.x;
+								customAttribute.array[offset + 1 ] = value.y;
+								customAttribute.array[offset + 2 ] = value.z;
+								customAttribute.array[offset + 3 ] = value.w;
 
-									case 3:
-										_gl.vertexAttrib3fv(programAttribute, value);
-										break;
-
-									case 4:
-										_gl.vertexAttrib4fv(programAttribute, value);
-										break;
-
-									default:
-										_gl.vertexAttrib1fv(programAttribute, value);
-								}
+								offset += 4;
 							}
 						}
 					}
 				}
-
-				state.disableUnusedAttributes();
 			}
+		}
 
-			// Sorting
+		if (dirtyVertices || object.sortParticles) {
+			_gl.bindBuffer(_gl.ARRAY_BUFFER, geometry.__webglVertexBuffer);
+			_gl.bufferData(_gl.ARRAY_BUFFER, vertexArray, hint);
+		}
 
-			function numericalSort (a, b) {
-				return b[ 0 ] - a[ 0 ];
-			}
+		if (dirtyColors || object.sortParticles) {
+			_gl.bindBuffer(_gl.ARRAY_BUFFER, geometry.__webglColorBuffer);
+			_gl.bufferData(_gl.ARRAY_BUFFER, colorArray, hint);
+		}
 
-			function painterSortStable (a, b) {
-				if (a.object.renderOrder !== b.object.renderOrder) {
-					return a.object.renderOrder - b.object.renderOrder;
-				} else if (a.material.id !== b.material.id) {
-					return a.material.id - b.material.id;
-				} else if (a.z !== b.z) {
-					return a.z - b.z;
-				} else {
-					return a.id - b.id;
-				}
-			}
+		if (customAttributes) {
+			for (i = 0, il = customAttributes.length; i < il; i ++) {
+				customAttribute = customAttributes[i];
 
-			function reversePainterSortStable (a, b) {
-				if (a.object.renderOrder !== b.object.renderOrder) {
-					return a.object.renderOrder - b.object.renderOrder;
-				} if (a.z !== b.z) {
-					return b.z - a.z;
-				} else {
-					return a.id - b.id;
+				if (customAttribute.needsUpdate || object.sortParticles) {
+					_gl.bindBuffer(_gl.ARRAY_BUFFER, customAttribute.buffer);
+					_gl.bufferData(_gl.ARRAY_BUFFER, customAttribute.array, hint);
 				}
 			}
+		}
+	};
 
-			// Rendering
+	function setLineBuffers (geometry, hint) {
+		var v, c, vertex, offset, color,
 
-			this.render = function (scene, camera, renderTarget, forceClear) {
-				if (camera instanceof Camera === false) {
-					console.error('WebGLRenderer.render: camera is not an instance of Camera.');
-					return;
-				}
+		vertices = geometry.vertices,
+		colors = geometry.colors,
+		vl = vertices.length,
+		cl = colors.length,
 
-				var fog = scene.fog;
+		vertexArray = geometry.__vertexArray,
+		colorArray = geometry.__colorArray,
 
-				// reset caching for this frame
+		dirtyVertices = geometry.verticesNeedUpdate,
+		dirtyColors = geometry.colorsNeedUpdate,
 
-				_currentGeometryProgram = '';
-				_currentMaterialId = - 1;
-				_currentCamera = null;
-				_lightsNeedUpdate = true;
+		customAttributes = geometry.__webglCustomAttributesList,
 
-				// update scene graph
+		i, il,
+		a, ca, cal, value,
+		customAttribute;
 
-				if (scene.autoUpdate === true) scene.updateMatrixWorld();
+		if (dirtyVertices) {
+			for (v = 0; v < vl; v ++) {
+				vertex = vertices[v];
 
-				// update camera matrices and frustum
+				offset = v * 3;
 
-				if (camera.parent === null) camera.updateMatrixWorld();
-
-				camera.matrixWorldInverse.getInverse(camera.matrixWorld);
-
-				_projScreenMatrix.multiplyMatrices(camera.projectionMatrix, camera.matrixWorldInverse);
-				_frustum.setFromMatrix(_projScreenMatrix);
-
-				lights.length = 0;
-
-				opaqueObjectsLastIndex = - 1;
-				transparentObjectsLastIndex = - 1;
-
-				sprites.length = 0;
-				lensFlares.length = 0;
-
-				projectObject(scene, camera);
-
-				opaqueObjects.length = opaqueObjectsLastIndex + 1;
-				transparentObjects.length = transparentObjectsLastIndex + 1;
-
-				if (_this.sortObjects === true) {
-					opaqueObjects.sort(painterSortStable);
-					transparentObjects.sort(reversePainterSortStable);
-				}
-
-				//
-
-				shadowMap.render(scene);
-
-				//
-
-				_infoRender.calls = 0;
-				_infoRender.vertices = 0;
-				_infoRender.faces = 0;
-				_infoRender.points = 0;
-
-				this.setRenderTarget(renderTarget);
-
-				if (this.autoClear || forceClear) {
-					this.clear(this.autoClearColor, this.autoClearDepth, this.autoClearStencil);
-				}
-
-				//
-
-				if (scene.overrideMaterial) {
-					var overrideMaterial = scene.overrideMaterial;
-
-					renderObjects(opaqueObjects, camera, lights, fog, overrideMaterial);
-					renderObjects(transparentObjects, camera, lights, fog, overrideMaterial);
-				} else {
-					// opaque pass (front-to-back order)
-
-					state.setBlending(NoBlending);
-					renderObjects(opaqueObjects, camera, lights, fog);
-
-					// transparent pass (back-to-front order)
-
-					renderObjects(transparentObjects, camera, lights, fog);
-				}
-
-				// custom render plugins (post pass)
-
-				spritePlugin.render(scene, camera);
-				lensFlarePlugin.render(scene, camera, _currentWidth, _currentHeight);
-
-				// Generate mipmap if we're using any kind of mipmap filtering
-
-				if (renderTarget) {
-					var texture = renderTarget.texture;
-					var isTargetPowerOfTwo = isPowerOfTwo(renderTarget);
-					if (texture.generateMipmaps && isTargetPowerOfTwo && texture.minFilter !== NearestFilter && texture.minFilter !== LinearFilter) {
-						 updateRenderTargetMipmap(renderTarget);
-					}
-				}
-
-				// Ensure depth buffer writing is enabled so it can be cleared on next render
-
-				state.setDepthTest(true);
-				state.setDepthWrite(true);
-				state.setColorWrite(true);
-
-				// _gl.finish();
-			};
-
-			function pushRenderItem(object, geometry, material, z, group) {
-				var array, index;
-
-				// allocate the next position in the appropriate array
-
-				if (material.transparent) {
-					array = transparentObjects;
-					index = ++ transparentObjectsLastIndex;
-				} else {
-					array = opaqueObjects;
-					index = ++ opaqueObjectsLastIndex;
-				}
-
-				// recycle existing render item or grow the array
-
-				var renderItem = array[ index ];
-
-				if (renderItem !== undefined) {
-					renderItem.id = object.id;
-					renderItem.object = object;
-					renderItem.geometry = geometry;
-					renderItem.material = material;
-					renderItem.z = _vector3.z;
-					renderItem.group = group;
-				} else {
-					renderItem = {
-						id: object.id,
-						object: object,
-						geometry: geometry,
-						material: material,
-						z: _vector3.z,
-						group: group
-					};
-
-					// assert(index === array.length);
-					array.push(renderItem);
-				}
+				vertexArray[offset]     = vertex.x;
+				vertexArray[offset + 1] = vertex.y;
+				vertexArray[offset + 2] = vertex.z;
 			}
 
-			function projectObject(object, camera) {
-				if (object.visible === false) return;
+			_gl.bindBuffer(_gl.ARRAY_BUFFER, geometry.__webglVertexBuffer);
+			_gl.bufferData(_gl.ARRAY_BUFFER, vertexArray, hint);
+		}
 
-				if ((object.channels.mask & camera.channels.mask) !== 0) {
-					if (object instanceof Light) {
-						lights.push(object);
-					} else if (object instanceof Sprite) {
-						sprites.push(object);
-					} else if (object instanceof LensFlare) {
-						lensFlares.push(object);
-					} else if (object instanceof ImmediateRenderObject) {
-						if (_this.sortObjects === true) {
-							_vector3.setFromMatrixPosition(object.matrixWorld);
-							_vector3.applyProjection(_projScreenMatrix);
+		if (dirtyColors) {
+			for (c = 0; c < cl; c ++) {
+				color = colors[c];
+
+				offset = c * 3;
+
+				colorArray[offset]     = color.r;
+				colorArray[offset + 1] = color.g;
+				colorArray[offset + 2] = color.b;
+			}
+
+			_gl.bindBuffer(_gl.ARRAY_BUFFER, geometry.__webglColorBuffer);
+			_gl.bufferData(_gl.ARRAY_BUFFER, colorArray, hint);
+		}
+
+		if (customAttributes) {
+			for (i = 0, il = customAttributes.length; i < il; i ++) {
+				customAttribute = customAttributes[i];
+
+				if (customAttribute.needsUpdate &&
+					 (customAttribute.boundTo === undefined ||
+					   customAttribute.boundTo === "vertices")) {
+					offset = 0;
+
+					cal = customAttribute.value.length;
+
+					if (customAttribute.size === 1) {
+						for (ca = 0; ca < cal; ca ++) {
+							customAttribute.array[ca] = customAttribute.value[ca];
 						}
+					} else if (customAttribute.size === 2) {
+						for (ca = 0; ca < cal; ca ++) {
+							value = customAttribute.value[ca];
 
-						pushRenderItem(object, null, object.material, _vector3.z, null);
-					} else if (object instanceof Mesh || object instanceof Line || object instanceof Points) {
-						if (object instanceof SkinnedMesh) {
-							object.skeleton.update();
+							customAttribute.array[offset] 	= value.x;
+							customAttribute.array[offset + 1] = value.y;
+
+							offset += 2;
 						}
+					} else if (customAttribute.size === 3) {
+						if (customAttribute.type === "c") {
+							for (ca = 0; ca < cal; ca ++) {
+								value = customAttribute.value[ca];
 
-						if (object.frustumCulled === false || _frustum.intersectsObject(object) === true) {
-							var material = object.material;
+								customAttribute.array[offset] 	= value.r;
+								customAttribute.array[offset + 1] = value.g;
+								customAttribute.array[offset + 2] = value.b;
 
-							if (material.visible === true) {
-								if (_this.sortObjects === true) {
-									_vector3.setFromMatrixPosition(object.matrixWorld);
-									_vector3.applyProjection(_projScreenMatrix);
-								}
+								offset += 3;
+							}
+						} else {
+							for (ca = 0; ca < cal; ca ++) {
+								value = customAttribute.value[ca];
 
-								var geometry = objects.update(object);
+								customAttribute.array[offset] 	= value.x;
+								customAttribute.array[offset + 1] = value.y;
+								customAttribute.array[offset + 2] = value.z;
 
-								if (material instanceof MeshFaceMaterial) {
-									var groups = geometry.groups;
-									var materials = material.materials;
-
-									for (var i = 0, l = groups.length; i < l; i ++) {
-										var group = groups[ i ];
-										var groupMaterial = materials[ group.materialIndex ];
-
-										if (groupMaterial.visible === true) {
-											pushRenderItem(object, geometry, groupMaterial, _vector3.z, group);
-										}
-									}
-								} else {
-									pushRenderItem(object, geometry, material, _vector3.z, null);
-								}
+								offset += 3;
 							}
 						}
-					}
-				}
+					} else if (customAttribute.size === 4) {
+						for (ca = 0; ca < cal; ca ++) {
+							value = customAttribute.value[ca];
 
-				var children = object.children;
+							customAttribute.array[offset] 	 = value.x;
+							customAttribute.array[offset + 1 ] = value.y;
+							customAttribute.array[offset + 2 ] = value.z;
+							customAttribute.array[offset + 3 ] = value.w;
 
-				for (var i = 0, l = children.length; i < l; i ++) {
-					projectObject(children[ i ], camera);
-				}
-			}
-
-			function renderObjects(renderList, camera, lights, fog, overrideMaterial) {
-				for (var i = 0, l = renderList.length; i < l; i ++) {
-					var renderItem = renderList[ i ];
-
-					var object = renderItem.object;
-					var geometry = renderItem.geometry;
-					var material = overrideMaterial === undefined ? renderItem.material : overrideMaterial;
-					var group = renderItem.group;
-
-					object.modelViewMatrix.multiplyMatrices(camera.matrixWorldInverse, object.matrixWorld);
-					object.normalMatrix.getNormalMatrix(object.modelViewMatrix);
-
-					if (object instanceof ImmediateRenderObject) {
-						setMaterial(material);
-
-						var program = setProgram(camera, lights, fog, material, object);
-
-						_currentGeometryProgram = '';
-
-						object.render(function (object) {
-							_this.renderBufferImmediate(object, program, material);
-						});
-					} else {
-						_this.renderBufferDirect(camera, lights, fog, geometry, material, object, group);
-					}
-				}
-			}
-
-			function initMaterial(material, lights, fog, object) {
-				var materialProperties = properties.get(material);
-
-				var parameters = programCache.getParameters(material, lights, fog, object);
-				var code = programCache.getProgramCode(material, parameters);
-
-				var program = materialProperties.program;
-				var programChange = true;
-
-				if (program === undefined) {
-					// new material
-					material.addEventListener('dispose', onMaterialDispose);
-				} else if (program.code !== code) {
-					// changed glsl or parameters
-					releaseMaterialProgramReference(material);
-				} else if (parameters.shaderID !== undefined) {
-					// same glsl and uniform list
-					return;
-				} else {
-					// only rebuild uniform list
-					programChange = false;
-				}
-
-				if (programChange) {
-					if (parameters.shaderID) {
-						var shader = ShaderLib[ parameters.shaderID ];
-
-						materialProperties.__webglShader = {
-							name: material.type,
-							uniforms: UniformsUtils.clone(shader.uniforms),
-							vertexShader: shader.vertexShader,
-							fragmentShader: shader.fragmentShader
-						};
-					} else {
-						materialProperties.__webglShader = {
-							name: material.type,
-							uniforms: material.uniforms,
-							vertexShader: material.vertexShader,
-							fragmentShader: material.fragmentShader
-						};
-					}
-
-					material.__webglShader = materialProperties.__webglShader;
-
-					program = programCache.acquireProgram(material, parameters, code);
-
-					materialProperties.program = program;
-					material.program = program;
-				}
-
-				var attributes = program.getAttributes();
-
-				if (material.morphTargets) {
-					material.numSupportedMorphTargets = 0;
-
-					for (var i = 0; i < _this.maxMorphTargets; i ++) {
-						if (attributes[ 'morphTarget' + i ] >= 0) {
-							material.numSupportedMorphTargets ++;
+							offset += 4;
 						}
 					}
+
+					_gl.bindBuffer(_gl.ARRAY_BUFFER, customAttribute.buffer);
+					_gl.bufferData(_gl.ARRAY_BUFFER, customAttribute.array, hint);
 				}
+			}
+		}
+	};
+
+	function setRibbonBuffers (geometry, hint) {
+		var v, c, vertex, offset, color,
+
+		vertices = geometry.vertices,
+		colors = geometry.colors,
+		vl = vertices.length,
+		cl = colors.length,
+
+		vertexArray = geometry.__vertexArray,
+		colorArray = geometry.__colorArray,
+
+		dirtyVertices = geometry.verticesNeedUpdate,
+		dirtyColors = geometry.colorsNeedUpdate;
+
+		if (dirtyVertices) {
+			for (v = 0; v < vl; v ++) {
+				vertex = vertices[v];
+
+				offset = v * 3;
+
+				vertexArray[offset]     = vertex.x;
+				vertexArray[offset + 1] = vertex.y;
+				vertexArray[offset + 2] = vertex.z;
+			}
+
+			_gl.bindBuffer(_gl.ARRAY_BUFFER, geometry.__webglVertexBuffer);
+			_gl.bufferData(_gl.ARRAY_BUFFER, vertexArray, hint);
+		}
+
+		if (dirtyColors) {
+			for (c = 0; c < cl; c ++) {
+				color = colors[c];
+
+				offset = c * 3;
+
+				colorArray[offset]     = color.r;
+				colorArray[offset + 1] = color.g;
+				colorArray[offset + 2] = color.b;
+			}
+
+			_gl.bindBuffer(_gl.ARRAY_BUFFER, geometry.__webglColorBuffer);
+			_gl.bufferData(_gl.ARRAY_BUFFER, colorArray, hint);
+		}
+	};
+
+	function setMeshBuffers(geometryGroup, object, hint, dispose, material) {
+		if (! geometryGroup.__inittedArrays) {
+			return;
+		}
+
+		var normalType = bufferGuessNormalType(material),
+		vertexColorType = bufferGuessVertexColorType(material),
+		uvType = bufferGuessUVType(material),
+
+		needsSmoothNormals = (normalType === SmoothShading);
+
+		var f, fl, fi, face,
+		vertexNormals, faceNormal, normal,
+		vertexColors, faceColor,
+		vertexTangents,
+		uv, uv2, v1, v2, v3, v4, t1, t2, t3, t4, n1, n2, n3, n4,
+		c1, c2, c3, c4,
+		sw1, sw2, sw3, sw4,
+		si1, si2, si3, si4,
+		sa1, sa2, sa3, sa4,
+		sb1, sb2, sb3, sb4,
+		m, ml, i, il,
+		vn, uvi, uv2i,
+		vk, vkl, vka,
+		nka, chf, faceVertexNormals,
+		a,
+
+		vertexIndex = 0,
+
+		offset = 0,
+		offset_uv = 0,
+		offset_uv2 = 0,
+		offset_face = 0,
+		offset_normal = 0,
+		offset_tangent = 0,
+		offset_line = 0,
+		offset_color = 0,
+		offset_skin = 0,
+		offset_morphTarget = 0,
+		offset_custom = 0,
+		offset_customSrc = 0,
+
+		value,
+
+		vertexArray = geometryGroup.__vertexArray,
+		uvArray = geometryGroup.__uvArray,
+		uv2Array = geometryGroup.__uv2Array,
+		normalArray = geometryGroup.__normalArray,
+		tangentArray = geometryGroup.__tangentArray,
+		colorArray = geometryGroup.__colorArray,
+
+		skinVertexAArray = geometryGroup.__skinVertexAArray,
+		skinVertexBArray = geometryGroup.__skinVertexBArray,
+		skinIndexArray = geometryGroup.__skinIndexArray,
+		skinWeightArray = geometryGroup.__skinWeightArray,
+
+		morphTargetsArrays = geometryGroup.__morphTargetsArrays,
+		morphNormalsArrays = geometryGroup.__morphNormalsArrays,
+
+		customAttributes = geometryGroup.__webglCustomAttributesList,
+		customAttribute,
+
+		faceArray = geometryGroup.__faceArray,
+		lineArray = geometryGroup.__lineArray,
+
+		geometry = object.geometry,
+
+		dirtyVertices = geometry.verticesNeedUpdate,
+		dirtyElements = geometry.elementsNeedUpdate,
+		dirtyUvs = geometry.uvsNeedUpdate,
+		dirtyNormals = geometry.normalsNeedUpdate,
+		dirtyTangents = geometry.tangetsNeedUpdate,
+		dirtyColors = geometry.colorsNeedUpdate,
+		dirtyMorphTargets = geometry.morphTargetsNeedUpdate,
+
+		vertices = geometry.vertices,
+		chunk_faces3 = geometryGroup.faces3,
+		chunk_faces4 = geometryGroup.faces4,
+		obj_faces = geometry.faces,
+
+		obj_uvs  = geometry.faceVertexUvs[0],
+		obj_uvs2 = geometry.faceVertexUvs[1],
+
+		obj_colors = geometry.colors,
+
+		obj_skinVerticesA = geometry.skinVerticesA,
+		obj_skinVerticesB = geometry.skinVerticesB,
+		obj_skinIndices = geometry.skinIndices,
+		obj_skinWeights = geometry.skinWeights,
+
+		morphTargets = geometry.morphTargets,
+		morphNormals = geometry.morphNormals;
+
+		if (dirtyVertices) {
+			for (f = 0, fl = chunk_faces3.length; f < fl; f ++) {
+				face = obj_faces[chunk_faces3[f]];
+
+				v1 = vertices[face.a];
+				v2 = vertices[face.b];
+				v3 = vertices[face.c];
+
+				vertexArray[offset]     = v1.x;
+				vertexArray[offset + 1] = v1.y;
+				vertexArray[offset + 2] = v1.z;
+
+				vertexArray[offset + 3] = v2.x;
+				vertexArray[offset + 4] = v2.y;
+				vertexArray[offset + 5] = v2.z;
+
+				vertexArray[offset + 6] = v3.x;
+				vertexArray[offset + 7] = v3.y;
+				vertexArray[offset + 8] = v3.z;
+
+				offset += 9;
+			}
+
+			for (f = 0, fl = chunk_faces4.length; f < fl; f ++) {
+				face = obj_faces[chunk_faces4[f]];
+
+				v1 = vertices[face.a];
+				v2 = vertices[face.b];
+				v3 = vertices[face.c];
+				v4 = vertices[face.d];
+
+				vertexArray[offset]     = v1.x;
+				vertexArray[offset + 1] = v1.y;
+				vertexArray[offset + 2] = v1.z;
+
+				vertexArray[offset + 3] = v2.x;
+				vertexArray[offset + 4] = v2.y;
+				vertexArray[offset + 5] = v2.z;
+
+				vertexArray[offset + 6] = v3.x;
+				vertexArray[offset + 7] = v3.y;
+				vertexArray[offset + 8] = v3.z;
+
+				vertexArray[offset + 9]  = v4.x;
+				vertexArray[offset + 10] = v4.y;
+				vertexArray[offset + 11] = v4.z;
+
+				offset += 12;
+			}
+
+			_gl.bindBuffer(_gl.ARRAY_BUFFER, geometryGroup.__webglVertexBuffer);
+			_gl.bufferData(_gl.ARRAY_BUFFER, vertexArray, hint);
+		}
+
+		if (dirtyMorphTargets) {
+			for (vk = 0, vkl = morphTargets.length; vk < vkl; vk ++) {
+				offset_morphTarget = 0;
+
+				for (f = 0, fl = chunk_faces3.length; f < fl; f ++) {
+					chf = chunk_faces3[f];
+					face = obj_faces[chf];
+
+					v1 = morphTargets[vk].vertices[face.a];
+					v2 = morphTargets[vk].vertices[face.b];
+					v3 = morphTargets[vk].vertices[face.c];
+
+					vka = morphTargetsArrays[vk];
+
+					vka[offset_morphTarget] 	  = v1.x;
+					vka[offset_morphTarget + 1] = v1.y;
+					vka[offset_morphTarget + 2] = v1.z;
+
+					vka[offset_morphTarget + 3] = v2.x;
+					vka[offset_morphTarget + 4] = v2.y;
+					vka[offset_morphTarget + 5] = v2.z;
+
+					vka[offset_morphTarget + 6] = v3.x;
+					vka[offset_morphTarget + 7] = v3.y;
+					vka[offset_morphTarget + 8] = v3.z;
+
+					if (material.morphNormals) {
+						if (needsSmoothNormals) {
+							faceVertexNormals = morphNormals[vk].vertexNormals[chf];
+
+							n1 = faceVertexNormals.a;
+							n2 = faceVertexNormals.b;
+							n3 = faceVertexNormals.c;
+						} else {
+							n1 = morphNormals[vk].faceNormals[chf];
+							n2 = n1;
+							n3 = n1;
+						}
+
+						nka = morphNormalsArrays[vk];
+
+						nka[offset_morphTarget] 	  = n1.x;
+						nka[offset_morphTarget + 1] = n1.y;
+						nka[offset_morphTarget + 2] = n1.z;
+
+						nka[offset_morphTarget + 3] = n2.x;
+						nka[offset_morphTarget + 4] = n2.y;
+						nka[offset_morphTarget + 5] = n2.z;
+
+						nka[offset_morphTarget + 6] = n3.x;
+						nka[offset_morphTarget + 7] = n3.y;
+						nka[offset_morphTarget + 8] = n3.z;
+					}
+
+					offset_morphTarget += 9;
+				}
+
+				for (f = 0, fl = chunk_faces4.length; f < fl; f ++) {
+					chf = chunk_faces4[f];
+					face = obj_faces[chf];
+
+					v1 = morphTargets[vk].vertices[face.a];
+					v2 = morphTargets[vk].vertices[face.b];
+					v3 = morphTargets[vk].vertices[face.c];
+					v4 = morphTargets[vk].vertices[face.d];
+
+					vka = morphTargetsArrays[vk];
+
+					vka[offset_morphTarget] 	  = v1.x;
+					vka[offset_morphTarget + 1] = v1.y;
+					vka[offset_morphTarget + 2] = v1.z;
+
+					vka[offset_morphTarget + 3] = v2.x;
+					vka[offset_morphTarget + 4] = v2.y;
+					vka[offset_morphTarget + 5] = v2.z;
+
+					vka[offset_morphTarget + 6] = v3.x;
+					vka[offset_morphTarget + 7] = v3.y;
+					vka[offset_morphTarget + 8] = v3.z;
+
+					vka[offset_morphTarget + 9]  = v4.x;
+					vka[offset_morphTarget + 10] = v4.y;
+					vka[offset_morphTarget + 11] = v4.z;
+
+					if (material.morphNormals) {
+						if (needsSmoothNormals) {
+							faceVertexNormals = morphNormals[vk].vertexNormals[chf];
+
+							n1 = faceVertexNormals.a;
+							n2 = faceVertexNormals.b;
+							n3 = faceVertexNormals.c;
+							n4 = faceVertexNormals.d;
+						} else {
+							n1 = morphNormals[vk].faceNormals[chf];
+							n2 = n1;
+							n3 = n1;
+							n4 = n1;
+						}
+
+						nka = morphNormalsArrays[vk];
+
+						nka[offset_morphTarget] 	  = n1.x;
+						nka[offset_morphTarget + 1] = n1.y;
+						nka[offset_morphTarget + 2] = n1.z;
+
+						nka[offset_morphTarget + 3] = n2.x;
+						nka[offset_morphTarget + 4] = n2.y;
+						nka[offset_morphTarget + 5] = n2.z;
+
+						nka[offset_morphTarget + 6] = n3.x;
+						nka[offset_morphTarget + 7] = n3.y;
+						nka[offset_morphTarget + 8] = n3.z;
+
+						nka[offset_morphTarget + 9]  = n4.x;
+						nka[offset_morphTarget + 10] = n4.y;
+						nka[offset_morphTarget + 11] = n4.z;
+					}
+
+					offset_morphTarget += 12;
+				}
+
+				_gl.bindBuffer(_gl.ARRAY_BUFFER, geometryGroup.__webglMorphTargetsBuffers[vk]);
+				_gl.bufferData(_gl.ARRAY_BUFFER, morphTargetsArrays[vk], hint);
 
 				if (material.morphNormals) {
-					material.numSupportedMorphNormals = 0;
-
-					for (i = 0; i < _this.maxMorphNormals; i ++) {
-						if (attributes[ 'morphNormal' + i ] >= 0) {
-							material.numSupportedMorphNormals ++;
-						}
-					}
-				}
-
-				materialProperties.uniformsList = [];
-
-				var uniformLocations = materialProperties.program.getUniforms();
-
-				for (var u in materialProperties.__webglShader.uniforms) {
-					var location = uniformLocations[ u ];
-
-					if (location) {
-						materialProperties.uniformsList.push([ materialProperties.__webglShader.uniforms[ u ], location ]);
-					}
+					_gl.bindBuffer(_gl.ARRAY_BUFFER, geometryGroup.__webglMorphNormalsBuffers[vk]);
+					_gl.bufferData(_gl.ARRAY_BUFFER, morphNormalsArrays[vk], hint);
 				}
 			}
+		}
 
-			function setMaterial(material) {
-				setMaterialFaces(material);
+		if (obj_skinWeights.length) {
+			for (f = 0, fl = chunk_faces3.length; f < fl; f ++) {
+				face = obj_faces[chunk_faces3[f]	];
 
-				if (material.transparent === true) {
-					state.setBlending(material.blending, material.blendEquation, material.blendSrc, material.blendDst, material.blendEquationAlpha, material.blendSrcAlpha, material.blendDstAlpha);
+				sw1 = obj_skinWeights[face.a];
+				sw2 = obj_skinWeights[face.b];
+				sw3 = obj_skinWeights[face.c];
+
+				skinWeightArray[offset_skin]     = sw1.x;
+				skinWeightArray[offset_skin + 1] = sw1.y;
+				skinWeightArray[offset_skin + 2] = sw1.z;
+				skinWeightArray[offset_skin + 3] = sw1.w;
+
+				skinWeightArray[offset_skin + 4] = sw2.x;
+				skinWeightArray[offset_skin + 5] = sw2.y;
+				skinWeightArray[offset_skin + 6] = sw2.z;
+				skinWeightArray[offset_skin + 7] = sw2.w;
+
+				skinWeightArray[offset_skin + 8]  = sw3.x;
+				skinWeightArray[offset_skin + 9]  = sw3.y;
+				skinWeightArray[offset_skin + 10] = sw3.z;
+				skinWeightArray[offset_skin + 11] = sw3.w;
+
+				si1 = obj_skinIndices[face.a];
+				si2 = obj_skinIndices[face.b];
+				si3 = obj_skinIndices[face.c];
+
+				skinIndexArray[offset_skin]     = si1.x;
+				skinIndexArray[offset_skin + 1] = si1.y;
+				skinIndexArray[offset_skin + 2] = si1.z;
+				skinIndexArray[offset_skin + 3] = si1.w;
+
+				skinIndexArray[offset_skin + 4] = si2.x;
+				skinIndexArray[offset_skin + 5] = si2.y;
+				skinIndexArray[offset_skin + 6] = si2.z;
+				skinIndexArray[offset_skin + 7] = si2.w;
+
+				skinIndexArray[offset_skin + 8]  = si3.x;
+				skinIndexArray[offset_skin + 9]  = si3.y;
+				skinIndexArray[offset_skin + 10] = si3.z;
+				skinIndexArray[offset_skin + 11] = si3.w;
+
+				sa1 = obj_skinVerticesA[face.a];
+				sa2 = obj_skinVerticesA[face.b];
+				sa3 = obj_skinVerticesA[face.c];
+
+				skinVertexAArray[offset_skin]     = sa1.x;
+				skinVertexAArray[offset_skin + 1] = sa1.y;
+				skinVertexAArray[offset_skin + 2] = sa1.z;
+				skinVertexAArray[offset_skin + 3] = 1;
+
+				skinVertexAArray[offset_skin + 4] = sa2.x;
+				skinVertexAArray[offset_skin + 5] = sa2.y;
+				skinVertexAArray[offset_skin + 6] = sa2.z;
+				skinVertexAArray[offset_skin + 7] = 1;
+
+				skinVertexAArray[offset_skin + 8]  = sa3.x;
+				skinVertexAArray[offset_skin + 9]  = sa3.y;
+				skinVertexAArray[offset_skin + 10] = sa3.z;
+				skinVertexAArray[offset_skin + 11] = 1;
+
+				sb1 = obj_skinVerticesB[face.a];
+				sb2 = obj_skinVerticesB[face.b];
+				sb3 = obj_skinVerticesB[face.c];
+
+				skinVertexBArray[offset_skin]     = sb1.x;
+				skinVertexBArray[offset_skin + 1] = sb1.y;
+				skinVertexBArray[offset_skin + 2] = sb1.z;
+				skinVertexBArray[offset_skin + 3] = 1;
+
+				skinVertexBArray[offset_skin + 4] = sb2.x;
+				skinVertexBArray[offset_skin + 5] = sb2.y;
+				skinVertexBArray[offset_skin + 6] = sb2.z;
+				skinVertexBArray[offset_skin + 7] = 1;
+
+				skinVertexBArray[offset_skin + 8]  = sb3.x;
+				skinVertexBArray[offset_skin + 9]  = sb3.y;
+				skinVertexBArray[offset_skin + 10] = sb3.z;
+				skinVertexBArray[offset_skin + 11] = 1;
+
+				offset_skin += 12;
+			}
+
+			for (f = 0, fl = chunk_faces4.length; f < fl; f ++) {
+				face = obj_faces[chunk_faces4[f]];
+
+				sw1 = obj_skinWeights[face.a];
+				sw2 = obj_skinWeights[face.b];
+				sw3 = obj_skinWeights[face.c];
+				sw4 = obj_skinWeights[face.d];
+
+				skinWeightArray[offset_skin]     = sw1.x;
+				skinWeightArray[offset_skin + 1] = sw1.y;
+				skinWeightArray[offset_skin + 2] = sw1.z;
+				skinWeightArray[offset_skin + 3] = sw1.w;
+
+				skinWeightArray[offset_skin + 4] = sw2.x;
+				skinWeightArray[offset_skin + 5] = sw2.y;
+				skinWeightArray[offset_skin + 6] = sw2.z;
+				skinWeightArray[offset_skin + 7] = sw2.w;
+
+				skinWeightArray[offset_skin + 8]  = sw3.x;
+				skinWeightArray[offset_skin + 9]  = sw3.y;
+				skinWeightArray[offset_skin + 10] = sw3.z;
+				skinWeightArray[offset_skin + 11] = sw3.w;
+
+				skinWeightArray[offset_skin + 12] = sw4.x;
+				skinWeightArray[offset_skin + 13] = sw4.y;
+				skinWeightArray[offset_skin + 14] = sw4.z;
+				skinWeightArray[offset_skin + 15] = sw4.w;
+
+				si1 = obj_skinIndices[face.a];
+				si2 = obj_skinIndices[face.b];
+				si3 = obj_skinIndices[face.c];
+				si4 = obj_skinIndices[face.d];
+
+				skinIndexArray[offset_skin]     = si1.x;
+				skinIndexArray[offset_skin + 1] = si1.y;
+				skinIndexArray[offset_skin + 2] = si1.z;
+				skinIndexArray[offset_skin + 3] = si1.w;
+
+				skinIndexArray[offset_skin + 4] = si2.x;
+				skinIndexArray[offset_skin + 5] = si2.y;
+				skinIndexArray[offset_skin + 6] = si2.z;
+				skinIndexArray[offset_skin + 7] = si2.w;
+
+				skinIndexArray[offset_skin + 8]  = si3.x;
+				skinIndexArray[offset_skin + 9]  = si3.y;
+				skinIndexArray[offset_skin + 10] = si3.z;
+				skinIndexArray[offset_skin + 11] = si3.w;
+
+				skinIndexArray[offset_skin + 12] = si4.x;
+				skinIndexArray[offset_skin + 13] = si4.y;
+				skinIndexArray[offset_skin + 14] = si4.z;
+				skinIndexArray[offset_skin + 15] = si4.w;
+
+				sa1 = obj_skinVerticesA[face.a];
+				sa2 = obj_skinVerticesA[face.b];
+				sa3 = obj_skinVerticesA[face.c];
+				sa4 = obj_skinVerticesA[face.d];
+
+				skinVertexAArray[offset_skin]     = sa1.x;
+				skinVertexAArray[offset_skin + 1] = sa1.y;
+				skinVertexAArray[offset_skin + 2] = sa1.z;
+				skinVertexAArray[offset_skin + 3] = 1;
+
+				skinVertexAArray[offset_skin + 4] = sa2.x;
+				skinVertexAArray[offset_skin + 5] = sa2.y;
+				skinVertexAArray[offset_skin + 6] = sa2.z;
+				skinVertexAArray[offset_skin + 7] = 1;
+
+				skinVertexAArray[offset_skin + 8]  = sa3.x;
+				skinVertexAArray[offset_skin + 9]  = sa3.y;
+				skinVertexAArray[offset_skin + 10] = sa3.z;
+				skinVertexAArray[offset_skin + 11] = 1;
+
+				skinVertexAArray[offset_skin + 12] = sa4.x;
+				skinVertexAArray[offset_skin + 13] = sa4.y;
+				skinVertexAArray[offset_skin + 14] = sa4.z;
+				skinVertexAArray[offset_skin + 15] = 1;
+
+				sb1 = obj_skinVerticesB[face.a];
+				sb2 = obj_skinVerticesB[face.b];
+				sb3 = obj_skinVerticesB[face.c];
+				sb4 = obj_skinVerticesB[face.d];
+
+				skinVertexBArray[offset_skin]     = sb1.x;
+				skinVertexBArray[offset_skin + 1] = sb1.y;
+				skinVertexBArray[offset_skin + 2] = sb1.z;
+				skinVertexBArray[offset_skin + 3] = 1;
+
+				skinVertexBArray[offset_skin + 4] = sb2.x;
+				skinVertexBArray[offset_skin + 5] = sb2.y;
+				skinVertexBArray[offset_skin + 6] = sb2.z;
+				skinVertexBArray[offset_skin + 7] = 1;
+
+				skinVertexBArray[offset_skin + 8]  = sb3.x;
+				skinVertexBArray[offset_skin + 9]  = sb3.y;
+				skinVertexBArray[offset_skin + 10] = sb3.z;
+				skinVertexBArray[offset_skin + 11] = 1;
+
+				skinVertexBArray[offset_skin + 12] = sb4.x;
+				skinVertexBArray[offset_skin + 13] = sb4.y;
+				skinVertexBArray[offset_skin + 14] = sb4.z;
+				skinVertexBArray[offset_skin + 15] = 1;
+
+				offset_skin += 16;
+			}
+
+			if (offset_skin > 0) {
+				_gl.bindBuffer(_gl.ARRAY_BUFFER, geometryGroup.__webglSkinVertexABuffer);
+				_gl.bufferData(_gl.ARRAY_BUFFER, skinVertexAArray, hint);
+
+				_gl.bindBuffer(_gl.ARRAY_BUFFER, geometryGroup.__webglSkinVertexBBuffer);
+				_gl.bufferData(_gl.ARRAY_BUFFER, skinVertexBArray, hint);
+
+				_gl.bindBuffer(_gl.ARRAY_BUFFER, geometryGroup.__webglSkinIndicesBuffer);
+				_gl.bufferData(_gl.ARRAY_BUFFER, skinIndexArray, hint);
+
+				_gl.bindBuffer(_gl.ARRAY_BUFFER, geometryGroup.__webglSkinWeightsBuffer);
+				_gl.bufferData(_gl.ARRAY_BUFFER, skinWeightArray, hint);
+			}
+		}
+
+		if (dirtyColors && vertexColorType) {
+			for (f = 0, fl = chunk_faces3.length; f < fl; f ++) {
+				face = obj_faces[chunk_faces3[f]	];
+
+				vertexColors = face.vertexColors;
+				faceColor = face.color;
+
+				if (vertexColors.length === 3 && vertexColorType === VertexColors) {
+					c1 = vertexColors[0];
+					c2 = vertexColors[1];
+					c3 = vertexColors[2];
 				} else {
-					state.setBlending(NoBlending);
+					c1 = faceColor;
+					c2 = faceColor;
+					c3 = faceColor;
 				}
 
-				state.setDepthFunc(material.depthFunc);
-				state.setDepthTest(material.depthTest);
-				state.setDepthWrite(material.depthWrite);
-				state.setColorWrite(material.colorWrite);
-				state.setPolygonOffset(material.polygonOffset, material.polygonOffsetFactor, material.polygonOffsetUnits);
+				colorArray[offset_color]     = c1.r;
+				colorArray[offset_color + 1] = c1.g;
+				colorArray[offset_color + 2] = c1.b;
+
+				colorArray[offset_color + 3] = c2.r;
+				colorArray[offset_color + 4] = c2.g;
+				colorArray[offset_color + 5] = c2.b;
+
+				colorArray[offset_color + 6] = c3.r;
+				colorArray[offset_color + 7] = c3.g;
+				colorArray[offset_color + 8] = c3.b;
+
+				offset_color += 9;
 			}
 
-			function setMaterialFaces(material) {
-				material.side !== DoubleSide ? state.enable(_gl.CULL_FACE) : state.disable(_gl.CULL_FACE);
-				state.setFlipSided(material.side === BackSide);
+			for (f = 0, fl = chunk_faces4.length; f < fl; f ++) {
+				face = obj_faces[chunk_faces4[f]];
+
+				vertexColors = face.vertexColors;
+				faceColor = face.color;
+
+				if (vertexColors.length === 4 && vertexColorType === VertexColors) {
+					c1 = vertexColors[0];
+					c2 = vertexColors[1];
+					c3 = vertexColors[2];
+					c4 = vertexColors[3];
+				} else {
+					c1 = faceColor;
+					c2 = faceColor;
+					c3 = faceColor;
+					c4 = faceColor;
+				}
+
+				colorArray[offset_color]     = c1.r;
+				colorArray[offset_color + 1] = c1.g;
+				colorArray[offset_color + 2] = c1.b;
+
+				colorArray[offset_color + 3] = c2.r;
+				colorArray[offset_color + 4] = c2.g;
+				colorArray[offset_color + 5] = c2.b;
+
+				colorArray[offset_color + 6] = c3.r;
+				colorArray[offset_color + 7] = c3.g;
+				colorArray[offset_color + 8] = c3.b;
+
+				colorArray[offset_color + 9]  = c4.r;
+				colorArray[offset_color + 10] = c4.g;
+				colorArray[offset_color + 11] = c4.b;
+
+				offset_color += 12;
 			}
 
-			function setProgram(camera, lights, fog, material, object) {
-				_usedTextureUnits = 0;
+			if (offset_color > 0) {
+				_gl.bindBuffer(_gl.ARRAY_BUFFER, geometryGroup.__webglColorBuffer);
+				_gl.bufferData(_gl.ARRAY_BUFFER, colorArray, hint);
+			}
+		}
 
-				var materialProperties = properties.get(material);
+		if (dirtyTangents && geometry.hasTangents) {
+			for (f = 0, fl = chunk_faces3.length; f < fl; f ++) {
+				face = obj_faces[chunk_faces3[f]	];
 
-				if (material.needsUpdate || ! materialProperties.program) {
-					initMaterial(material, lights, fog, object);
-					material.needsUpdate = false;
-				}
+				vertexTangents = face.vertexTangents;
 
-				var refreshProgram = false;
-				var refreshMaterial = false;
-				var refreshLights = false;
+				t1 = vertexTangents[0];
+				t2 = vertexTangents[1];
+				t3 = vertexTangents[2];
 
-				var program = materialProperties.program,
-					p_uniforms = program.getUniforms(),
-					m_uniforms = materialProperties.__webglShader.uniforms;
+				tangentArray[offset_tangent]     = t1.x;
+				tangentArray[offset_tangent + 1] = t1.y;
+				tangentArray[offset_tangent + 2] = t1.z;
+				tangentArray[offset_tangent + 3] = t1.w;
 
-				if (program.id !== _currentProgram) {
-					_gl.useProgram(program.program);
-					_currentProgram = program.id;
+				tangentArray[offset_tangent + 4] = t2.x;
+				tangentArray[offset_tangent + 5] = t2.y;
+				tangentArray[offset_tangent + 6] = t2.z;
+				tangentArray[offset_tangent + 7] = t2.w;
 
-					refreshProgram = true;
-					refreshMaterial = true;
-					refreshLights = true;
-				}
+				tangentArray[offset_tangent + 8]  = t3.x;
+				tangentArray[offset_tangent + 9]  = t3.y;
+				tangentArray[offset_tangent + 10] = t3.z;
+				tangentArray[offset_tangent + 11] = t3.w;
 
-				if (material.id !== _currentMaterialId) {
-					if (_currentMaterialId === - 1) refreshLights = true;
-					_currentMaterialId = material.id;
+				offset_tangent += 12;
+			}
 
-					refreshMaterial = true;
-				}
+			for (f = 0, fl = chunk_faces4.length; f < fl; f ++) {
+				face = obj_faces[chunk_faces4[f]];
 
-				if (refreshProgram || camera !== _currentCamera) {
-					_gl.uniformMatrix4fv(p_uniforms.projectionMatrix, false, camera.projectionMatrix.elements);
+				vertexTangents = face.vertexTangents;
 
-					if (capabilities.logarithmicDepthBuffer) {
-						_gl.uniform1f(p_uniforms.logDepthBufFC, 2.0 / (Math.log(camera.far + 1.0) / Math.LN2));
+				t1 = vertexTangents[0];
+				t2 = vertexTangents[1];
+				t3 = vertexTangents[2];
+				t4 = vertexTangents[3];
+
+				tangentArray[offset_tangent]     = t1.x;
+				tangentArray[offset_tangent + 1] = t1.y;
+				tangentArray[offset_tangent + 2] = t1.z;
+				tangentArray[offset_tangent + 3] = t1.w;
+
+				tangentArray[offset_tangent + 4] = t2.x;
+				tangentArray[offset_tangent + 5] = t2.y;
+				tangentArray[offset_tangent + 6] = t2.z;
+				tangentArray[offset_tangent + 7] = t2.w;
+
+				tangentArray[offset_tangent + 8]  = t3.x;
+				tangentArray[offset_tangent + 9]  = t3.y;
+				tangentArray[offset_tangent + 10] = t3.z;
+				tangentArray[offset_tangent + 11] = t3.w;
+
+				tangentArray[offset_tangent + 12] = t4.x;
+				tangentArray[offset_tangent + 13] = t4.y;
+				tangentArray[offset_tangent + 14] = t4.z;
+				tangentArray[offset_tangent + 15] = t4.w;
+
+				offset_tangent += 16;
+			}
+
+			_gl.bindBuffer(_gl.ARRAY_BUFFER, geometryGroup.__webglTangentBuffer);
+			_gl.bufferData(_gl.ARRAY_BUFFER, tangentArray, hint);
+		}
+
+		if (dirtyNormals && normalType) {
+			for (f = 0, fl = chunk_faces3.length; f < fl; f ++) {
+				face = obj_faces[chunk_faces3[f]	];
+
+				vertexNormals = face.vertexNormals;
+				faceNormal = face.normal;
+
+				if (vertexNormals.length === 3 && needsSmoothNormals) {
+					for (i = 0; i < 3; i ++) {
+						vn = vertexNormals[i];
+
+						normalArray[offset_normal]     = vn.x;
+						normalArray[offset_normal + 1] = vn.y;
+						normalArray[offset_normal + 2] = vn.z;
+
+						offset_normal += 3;
 					}
+				} else {
+					for (i = 0; i < 3; i ++) {
+						normalArray[offset_normal]     = faceNormal.x;
+						normalArray[offset_normal + 1] = faceNormal.y;
+						normalArray[offset_normal + 2] = faceNormal.z;
 
-
-					if (camera !== _currentCamera) _currentCamera = camera;
-
-					// load material specific uniforms
-					// (shader material also gets them for the sake of genericity)
-
-					if (material instanceof ShaderMaterial ||
-						 material instanceof MeshPhongMaterial ||
-						 material.envMap) {
-						if (p_uniforms.cameraPosition !== undefined) {
-							_vector3.setFromMatrixPosition(camera.matrixWorld);
-							_gl.uniform3f(p_uniforms.cameraPosition, _vector3.x, _vector3.y, _vector3.z);
-						}
-					}
-
-					if (material instanceof MeshPhongMaterial ||
-						 material instanceof MeshLambertMaterial ||
-						 material instanceof MeshBasicMaterial ||
-						 material instanceof ShaderMaterial ||
-						 material.skinning) {
-						if (p_uniforms.viewMatrix !== undefined) {
-							_gl.uniformMatrix4fv(p_uniforms.viewMatrix, false, camera.matrixWorldInverse.elements);
-						}
-					}
-				}
-
-				// skinning uniforms must be set even if material didn't change
-				// auto-setting of texture unit for bone texture must go before other textures
-				// not sure why, but otherwise weird things happen
-
-				if (material.skinning) {
-					if (object.bindMatrix && p_uniforms.bindMatrix !== undefined) {
-						_gl.uniformMatrix4fv(p_uniforms.bindMatrix, false, object.bindMatrix.elements);
-					}
-
-					if (object.bindMatrixInverse && p_uniforms.bindMatrixInverse !== undefined) {
-						_gl.uniformMatrix4fv(p_uniforms.bindMatrixInverse, false, object.bindMatrixInverse.elements);
-					}
-
-					if (capabilities.floatVertexTextures && object.skeleton && object.skeleton.useVertexTexture) {
-						if (p_uniforms.boneTexture !== undefined) {
-							var textureUnit = getTextureUnit();
-
-							_gl.uniform1i(p_uniforms.boneTexture, textureUnit);
-							_this.setTexture(object.skeleton.boneTexture, textureUnit);
-						}
-
-						if (p_uniforms.boneTextureWidth !== undefined) {
-							_gl.uniform1i(p_uniforms.boneTextureWidth, object.skeleton.boneTextureWidth);
-						}
-
-						if (p_uniforms.boneTextureHeight !== undefined) {
-							_gl.uniform1i(p_uniforms.boneTextureHeight, object.skeleton.boneTextureHeight);
-						}
-					} else if (object.skeleton && object.skeleton.boneMatrices) {
-						if (p_uniforms.boneGlobalMatrices !== undefined) {
-							_gl.uniformMatrix4fv(p_uniforms.boneGlobalMatrices, false, object.skeleton.boneMatrices);
-						}
+						offset_normal += 3;
 					}
 				}
+			}
 
-				if (refreshMaterial) {
-					// refresh uniforms common to several materials
+			for (f = 0, fl = chunk_faces4.length; f < fl; f ++) {
+				face = obj_faces[chunk_faces4[f]];
 
-					if (fog && material.fog) {
-						refreshUniformsFog(m_uniforms, fog);
+				vertexNormals = face.vertexNormals;
+				faceNormal = face.normal;
+
+				if (vertexNormals.length === 4 && needsSmoothNormals) {
+					for (i = 0; i < 4; i ++) {
+						vn = vertexNormals[i];
+
+						normalArray[offset_normal]     = vn.x;
+						normalArray[offset_normal + 1] = vn.y;
+						normalArray[offset_normal + 2] = vn.z;
+
+						offset_normal += 3;
 					}
+				} else {
+					for (i = 0; i < 4; i ++) {
+						normalArray[offset_normal]     = faceNormal.x;
+						normalArray[offset_normal + 1] = faceNormal.y;
+						normalArray[offset_normal + 2] = faceNormal.z;
 
-					if (material instanceof MeshPhongMaterial ||
-						 material instanceof MeshLambertMaterial ||
-						 material.lights) {
-						if (_lightsNeedUpdate) {
-							refreshLights = true;
-							setupLights(lights, camera);
-							_lightsNeedUpdate = false;
+						offset_normal += 3;
+					}
+				}
+			}
+
+			_gl.bindBuffer(_gl.ARRAY_BUFFER, geometryGroup.__webglNormalBuffer);
+			_gl.bufferData(_gl.ARRAY_BUFFER, normalArray, hint);
+		}
+
+		if (dirtyUvs && obj_uvs && uvType) {
+			for (f = 0, fl = chunk_faces3.length; f < fl; f ++) {
+				fi = chunk_faces3[f];
+
+				face = obj_faces[fi];
+				uv = obj_uvs[fi];
+
+				if (uv === undefined) continue;
+
+				for (i = 0; i < 3; i ++) {
+					uvi = uv[i];
+
+					uvArray[offset_uv]     = uvi.u;
+					uvArray[offset_uv + 1] = uvi.v;
+
+					offset_uv += 2;
+				}
+			}
+
+			for (f = 0, fl = chunk_faces4.length; f < fl; f ++) {
+				fi = chunk_faces4[f];
+
+				face = obj_faces[fi];
+				uv = obj_uvs[fi];
+
+				if (uv === undefined) continue;
+
+				for (i = 0; i < 4; i ++) {
+					uvi = uv[i];
+
+					uvArray[offset_uv]     = uvi.u;
+					uvArray[offset_uv + 1] = uvi.v;
+
+					offset_uv += 2;
+				}
+			}
+
+			if (offset_uv > 0) {
+				_gl.bindBuffer(_gl.ARRAY_BUFFER, geometryGroup.__webglUVBuffer);
+				_gl.bufferData(_gl.ARRAY_BUFFER, uvArray, hint);
+			}
+		}
+
+		if (dirtyUvs && obj_uvs2 && uvType) {
+			for (f = 0, fl = chunk_faces3.length; f < fl; f ++) {
+				fi = chunk_faces3[f];
+
+				face = obj_faces[fi];
+				uv2 = obj_uvs2[fi];
+
+				if (uv2 === undefined) continue;
+
+				for (i = 0; i < 3; i ++) {
+					uv2i = uv2[i];
+
+					uv2Array[offset_uv2]     = uv2i.u;
+					uv2Array[offset_uv2 + 1] = uv2i.v;
+
+					offset_uv2 += 2;
+				}
+			}
+
+			for (f = 0, fl = chunk_faces4.length; f < fl; f ++) {
+				fi = chunk_faces4[f];
+
+				face = obj_faces[fi];
+				uv2 = obj_uvs2[fi];
+
+				if (uv2 === undefined) continue;
+
+				for (i = 0; i < 4; i ++) {
+					uv2i = uv2[i];
+
+					uv2Array[offset_uv2]     = uv2i.u;
+					uv2Array[offset_uv2 + 1] = uv2i.v;
+
+					offset_uv2 += 2;
+				}
+			}
+
+			if (offset_uv2 > 0) {
+				_gl.bindBuffer(_gl.ARRAY_BUFFER, geometryGroup.__webglUV2Buffer);
+				_gl.bufferData(_gl.ARRAY_BUFFER, uv2Array, hint);
+			}
+		}
+
+		if (dirtyElements) {
+			for (f = 0, fl = chunk_faces3.length; f < fl; f ++) {
+				face = obj_faces[chunk_faces3[f]	];
+
+				faceArray[offset_face] 	 = vertexIndex;
+				faceArray[offset_face + 1] = vertexIndex + 1;
+				faceArray[offset_face + 2] = vertexIndex + 2;
+
+				offset_face += 3;
+
+				lineArray[offset_line]     = vertexIndex;
+				lineArray[offset_line + 1] = vertexIndex + 1;
+
+				lineArray[offset_line + 2] = vertexIndex;
+				lineArray[offset_line + 3] = vertexIndex + 2;
+
+				lineArray[offset_line + 4] = vertexIndex + 1;
+				lineArray[offset_line + 5] = vertexIndex + 2;
+
+				offset_line += 6;
+
+				vertexIndex += 3;
+			}
+
+			for (f = 0, fl = chunk_faces4.length; f < fl; f ++) {
+				face = obj_faces[chunk_faces4[f]];
+
+				faceArray[offset_face]     = vertexIndex;
+				faceArray[offset_face + 1] = vertexIndex + 1;
+				faceArray[offset_face + 2] = vertexIndex + 3;
+
+				faceArray[offset_face + 3] = vertexIndex + 1;
+				faceArray[offset_face + 4] = vertexIndex + 2;
+				faceArray[offset_face + 5] = vertexIndex + 3;
+
+				offset_face += 6;
+
+				lineArray[offset_line]     = vertexIndex;
+				lineArray[offset_line + 1] = vertexIndex + 1;
+
+				lineArray[offset_line + 2] = vertexIndex;
+				lineArray[offset_line + 3] = vertexIndex + 3;
+
+				lineArray[offset_line + 4] = vertexIndex + 1;
+				lineArray[offset_line + 5] = vertexIndex + 2;
+
+				lineArray[offset_line + 6] = vertexIndex + 2;
+				lineArray[offset_line + 7] = vertexIndex + 3;
+
+				offset_line += 8;
+
+				vertexIndex += 4;
+			}
+
+			_gl.bindBuffer(_gl.ELEMENT_ARRAY_BUFFER, geometryGroup.__webglFaceBuffer);
+			_gl.bufferData(_gl.ELEMENT_ARRAY_BUFFER, faceArray, hint);
+
+			_gl.bindBuffer(_gl.ELEMENT_ARRAY_BUFFER, geometryGroup.__webglLineBuffer);
+			_gl.bufferData(_gl.ELEMENT_ARRAY_BUFFER, lineArray, hint);
+		}
+
+		if (customAttributes) {
+			for (i = 0, il = customAttributes.length; i < il; i ++) {
+				customAttribute = customAttributes[i];
+
+				if (! customAttribute.__original.needsUpdate) continue;
+
+				offset_custom = 0;
+				offset_customSrc = 0;
+
+				if (customAttribute.size === 1) {
+					if (customAttribute.boundTo === undefined || customAttribute.boundTo === "vertices") {
+						for (f = 0, fl = chunk_faces3.length; f < fl; f ++) {
+							face = obj_faces[chunk_faces3[f]	];
+
+							customAttribute.array[offset_custom] 	   = customAttribute.value[face.a];
+							customAttribute.array[offset_custom + 1] = customAttribute.value[face.b];
+							customAttribute.array[offset_custom + 2] = customAttribute.value[face.c];
+
+							offset_custom += 3;
 						}
 
-						if (refreshLights) {
-							refreshUniformsLights(m_uniforms, _lights);
-							markUniformsLightsNeedsUpdate(m_uniforms, true);
+						for (f = 0, fl = chunk_faces4.length; f < fl; f ++) {
+							face = obj_faces[chunk_faces4[f]];
+
+							customAttribute.array[offset_custom] 	   = customAttribute.value[face.a];
+							customAttribute.array[offset_custom + 1] = customAttribute.value[face.b];
+							customAttribute.array[offset_custom + 2] = customAttribute.value[face.c];
+							customAttribute.array[offset_custom + 3] = customAttribute.value[face.d];
+
+							offset_custom += 4;
+						}
+					} else if (customAttribute.boundTo === "faces") {
+						for (f = 0, fl = chunk_faces3.length; f < fl; f ++) {
+							value = customAttribute.value[chunk_faces3[f]];
+
+							customAttribute.array[offset_custom] 	   = value;
+							customAttribute.array[offset_custom + 1] = value;
+							customAttribute.array[offset_custom + 2] = value;
+
+							offset_custom += 3;
+						}
+
+						for (f = 0, fl = chunk_faces4.length; f < fl; f ++) {
+							value = customAttribute.value[chunk_faces4[f]];
+
+							customAttribute.array[offset_custom] 	   = value;
+							customAttribute.array[offset_custom + 1] = value;
+							customAttribute.array[offset_custom + 2] = value;
+							customAttribute.array[offset_custom + 3] = value;
+
+							offset_custom += 4;
+						}
+					}
+				} else if (customAttribute.size === 2) {
+					if (customAttribute.boundTo === undefined || customAttribute.boundTo === "vertices") {
+						for (f = 0, fl = chunk_faces3.length; f < fl; f ++) {
+							face = obj_faces[chunk_faces3[f]	];
+
+							v1 = customAttribute.value[face.a];
+							v2 = customAttribute.value[face.b];
+							v3 = customAttribute.value[face.c];
+
+							customAttribute.array[offset_custom] 	   = v1.x;
+							customAttribute.array[offset_custom + 1] = v1.y;
+
+							customAttribute.array[offset_custom + 2] = v2.x;
+							customAttribute.array[offset_custom + 3] = v2.y;
+
+							customAttribute.array[offset_custom + 4] = v3.x;
+							customAttribute.array[offset_custom + 5] = v3.y;
+
+							offset_custom += 6;
+						}
+
+						for (f = 0, fl = chunk_faces4.length; f < fl; f ++) {
+							face = obj_faces[chunk_faces4[f]];
+
+							v1 = customAttribute.value[face.a];
+							v2 = customAttribute.value[face.b];
+							v3 = customAttribute.value[face.c];
+							v4 = customAttribute.value[face.d];
+
+							customAttribute.array[offset_custom] 	   = v1.x;
+							customAttribute.array[offset_custom + 1] = v1.y;
+
+							customAttribute.array[offset_custom + 2] = v2.x;
+							customAttribute.array[offset_custom + 3] = v2.y;
+
+							customAttribute.array[offset_custom + 4] = v3.x;
+							customAttribute.array[offset_custom + 5] = v3.y;
+
+							customAttribute.array[offset_custom + 6] = v4.x;
+							customAttribute.array[offset_custom + 7] = v4.y;
+
+							offset_custom += 8;
+						}
+					} else if (customAttribute.boundTo === "faces") {
+						for (f = 0, fl = chunk_faces3.length; f < fl; f ++) {
+							value = customAttribute.value[chunk_faces3[f]];
+
+							v1 = value;
+							v2 = value;
+							v3 = value;
+
+							customAttribute.array[offset_custom] 	   = v1.x;
+							customAttribute.array[offset_custom + 1] = v1.y;
+
+							customAttribute.array[offset_custom + 2] = v2.x;
+							customAttribute.array[offset_custom + 3] = v2.y;
+
+							customAttribute.array[offset_custom + 4] = v3.x;
+							customAttribute.array[offset_custom + 5] = v3.y;
+
+							offset_custom += 6;
+						}
+
+						for (f = 0, fl = chunk_faces4.length; f < fl; f ++) {
+							value = customAttribute.value[chunk_faces4[f]];
+
+							v1 = value;
+							v2 = value;
+							v3 = value;
+							v4 = value;
+
+							customAttribute.array[offset_custom] 	   = v1.x;
+							customAttribute.array[offset_custom + 1] = v1.y;
+
+							customAttribute.array[offset_custom + 2] = v2.x;
+							customAttribute.array[offset_custom + 3] = v2.y;
+
+							customAttribute.array[offset_custom + 4] = v3.x;
+							customAttribute.array[offset_custom + 5] = v3.y;
+
+							customAttribute.array[offset_custom + 6] = v4.x;
+							customAttribute.array[offset_custom + 7] = v4.y;
+
+							offset_custom += 8;
+						}
+					}
+				} else if (customAttribute.size === 3) {
+					var pp;
+
+					if (customAttribute.type === "c") {
+						pp = ["r", "g", "b"];
+					} else {
+						pp = ["x", "y", "z"];
+					}
+
+					if (customAttribute.boundTo === undefined || customAttribute.boundTo === "vertices") {
+						for (f = 0, fl = chunk_faces3.length; f < fl; f ++) {
+							face = obj_faces[chunk_faces3[f]	];
+
+							v1 = customAttribute.value[face.a];
+							v2 = customAttribute.value[face.b];
+							v3 = customAttribute.value[face.c];
+
+							customAttribute.array[offset_custom] 	   = v1[pp[0]];
+							customAttribute.array[offset_custom + 1] = v1[pp[1]];
+							customAttribute.array[offset_custom + 2] = v1[pp[2]];
+
+							customAttribute.array[offset_custom + 3] = v2[pp[0]];
+							customAttribute.array[offset_custom + 4] = v2[pp[1]];
+							customAttribute.array[offset_custom + 5] = v2[pp[2]];
+
+							customAttribute.array[offset_custom + 6] = v3[pp[0]];
+							customAttribute.array[offset_custom + 7] = v3[pp[1]];
+							customAttribute.array[offset_custom + 8] = v3[pp[2]];
+
+							offset_custom += 9;
+						}
+
+						for (f = 0, fl = chunk_faces4.length; f < fl; f ++) {
+							face = obj_faces[chunk_faces4[f]];
+
+							v1 = customAttribute.value[face.a];
+							v2 = customAttribute.value[face.b];
+							v3 = customAttribute.value[face.c];
+							v4 = customAttribute.value[face.d];
+
+							customAttribute.array[offset_custom ] 	= v1[pp[0]];
+							customAttribute.array[offset_custom + 1 ] = v1[pp[1]];
+							customAttribute.array[offset_custom + 2 ] = v1[pp[2]];
+
+							customAttribute.array[offset_custom + 3 ] = v2[pp[0]];
+							customAttribute.array[offset_custom + 4 ] = v2[pp[1]];
+							customAttribute.array[offset_custom + 5 ] = v2[pp[2]];
+
+							customAttribute.array[offset_custom + 6 ] = v3[pp[0]];
+							customAttribute.array[offset_custom + 7 ] = v3[pp[1]];
+							customAttribute.array[offset_custom + 8 ] = v3[pp[2]];
+
+							customAttribute.array[offset_custom + 9 ] = v4[pp[0]];
+							customAttribute.array[offset_custom + 10] = v4[pp[1]];
+							customAttribute.array[offset_custom + 11] = v4[pp[2]];
+
+							offset_custom += 12;
+						}
+					} else if (customAttribute.boundTo === "faces") {
+						for (f = 0, fl = chunk_faces3.length; f < fl; f ++) {
+							value = customAttribute.value[chunk_faces3[f]];
+
+							v1 = value;
+							v2 = value;
+							v3 = value;
+
+							customAttribute.array[offset_custom] 	   = v1[pp[0]];
+							customAttribute.array[offset_custom + 1] = v1[pp[1]];
+							customAttribute.array[offset_custom + 2] = v1[pp[2]];
+
+							customAttribute.array[offset_custom + 3] = v2[pp[0]];
+							customAttribute.array[offset_custom + 4] = v2[pp[1]];
+							customAttribute.array[offset_custom + 5] = v2[pp[2]];
+
+							customAttribute.array[offset_custom + 6] = v3[pp[0]];
+							customAttribute.array[offset_custom + 7] = v3[pp[1]];
+							customAttribute.array[offset_custom + 8] = v3[pp[2]];
+
+							offset_custom += 9;
+						}
+
+						for (f = 0, fl = chunk_faces4.length; f < fl; f ++) {
+							value = customAttribute.value[chunk_faces4[f]];
+
+							v1 = value;
+							v2 = value;
+							v3 = value;
+							v4 = value;
+
+							customAttribute.array[offset_custom ] 	= v1[pp[0]];
+							customAttribute.array[offset_custom + 1 ] = v1[pp[1]];
+							customAttribute.array[offset_custom + 2 ] = v1[pp[2]];
+
+							customAttribute.array[offset_custom + 3 ] = v2[pp[0]];
+							customAttribute.array[offset_custom + 4 ] = v2[pp[1]];
+							customAttribute.array[offset_custom + 5 ] = v2[pp[2]];
+
+							customAttribute.array[offset_custom + 6 ] = v3[pp[0]];
+							customAttribute.array[offset_custom + 7 ] = v3[pp[1]];
+							customAttribute.array[offset_custom + 8 ] = v3[pp[2]];
+
+							customAttribute.array[offset_custom + 9 ] = v4[pp[0]];
+							customAttribute.array[offset_custom + 10] = v4[pp[1]];
+							customAttribute.array[offset_custom + 11] = v4[pp[2]];
+
+							offset_custom += 12;
+						}
+					}
+				} else if (customAttribute.size === 4) {
+					if (customAttribute.boundTo === undefined || customAttribute.boundTo === "vertices") {
+						for (f = 0, fl = chunk_faces3.length; f < fl; f ++) {
+							face = obj_faces[chunk_faces3[f]	];
+
+							v1 = customAttribute.value[face.a];
+							v2 = customAttribute.value[face.b];
+							v3 = customAttribute.value[face.c];
+
+							customAttribute.array[offset_custom ] 	= v1.x;
+							customAttribute.array[offset_custom + 1 ] = v1.y;
+							customAttribute.array[offset_custom + 2 ] = v1.z;
+							customAttribute.array[offset_custom + 3 ] = v1.w;
+
+							customAttribute.array[offset_custom + 4 ] = v2.x;
+							customAttribute.array[offset_custom + 5 ] = v2.y;
+							customAttribute.array[offset_custom + 6 ] = v2.z;
+							customAttribute.array[offset_custom + 7 ] = v2.w;
+
+							customAttribute.array[offset_custom + 8 ] = v3.x;
+							customAttribute.array[offset_custom + 9 ] = v3.y;
+							customAttribute.array[offset_custom + 10] = v3.z;
+							customAttribute.array[offset_custom + 11] = v3.w;
+
+							offset_custom += 12;
+						}
+
+						for (f = 0, fl = chunk_faces4.length; f < fl; f ++) {
+							face = obj_faces[chunk_faces4[f]];
+
+							v1 = customAttribute.value[face.a];
+							v2 = customAttribute.value[face.b];
+							v3 = customAttribute.value[face.c];
+							v4 = customAttribute.value[face.d];
+
+							customAttribute.array[offset_custom ] 	= v1.x;
+							customAttribute.array[offset_custom + 1 ] = v1.y;
+							customAttribute.array[offset_custom + 2 ] = v1.z;
+							customAttribute.array[offset_custom + 3 ] = v1.w;
+
+							customAttribute.array[offset_custom + 4 ] = v2.x;
+							customAttribute.array[offset_custom + 5 ] = v2.y;
+							customAttribute.array[offset_custom + 6 ] = v2.z;
+							customAttribute.array[offset_custom + 7 ] = v2.w;
+
+							customAttribute.array[offset_custom + 8 ] = v3.x;
+							customAttribute.array[offset_custom + 9 ] = v3.y;
+							customAttribute.array[offset_custom + 10] = v3.z;
+							customAttribute.array[offset_custom + 11] = v3.w;
+
+							customAttribute.array[offset_custom + 12] = v4.x;
+							customAttribute.array[offset_custom + 13] = v4.y;
+							customAttribute.array[offset_custom + 14] = v4.z;
+							customAttribute.array[offset_custom + 15] = v4.w;
+
+							offset_custom += 16;
+						}
+					} else if (customAttribute.boundTo === "faces") {
+						for (f = 0, fl = chunk_faces3.length; f < fl; f ++) {
+							value = customAttribute.value[chunk_faces3[f]];
+
+							v1 = value;
+							v2 = value;
+							v3 = value;
+
+							customAttribute.array[offset_custom ] 	= v1.x;
+							customAttribute.array[offset_custom + 1 ] = v1.y;
+							customAttribute.array[offset_custom + 2 ] = v1.z;
+							customAttribute.array[offset_custom + 3 ] = v1.w;
+
+							customAttribute.array[offset_custom + 4 ] = v2.x;
+							customAttribute.array[offset_custom + 5 ] = v2.y;
+							customAttribute.array[offset_custom + 6 ] = v2.z;
+							customAttribute.array[offset_custom + 7 ] = v2.w;
+
+							customAttribute.array[offset_custom + 8 ] = v3.x;
+							customAttribute.array[offset_custom + 9 ] = v3.y;
+							customAttribute.array[offset_custom + 10] = v3.z;
+							customAttribute.array[offset_custom + 11] = v3.w;
+
+							offset_custom += 12;
+						}
+
+						for (f = 0, fl = chunk_faces4.length; f < fl; f ++) {
+							value = customAttribute.value[chunk_faces4[f]];
+
+							v1 = value;
+							v2 = value;
+							v3 = value;
+							v4 = value;
+
+							customAttribute.array[offset_custom ] 	= v1.x;
+							customAttribute.array[offset_custom + 1 ] = v1.y;
+							customAttribute.array[offset_custom + 2 ] = v1.z;
+							customAttribute.array[offset_custom + 3 ] = v1.w;
+
+							customAttribute.array[offset_custom + 4 ] = v2.x;
+							customAttribute.array[offset_custom + 5 ] = v2.y;
+							customAttribute.array[offset_custom + 6 ] = v2.z;
+							customAttribute.array[offset_custom + 7 ] = v2.w;
+
+							customAttribute.array[offset_custom + 8 ] = v3.x;
+							customAttribute.array[offset_custom + 9 ] = v3.y;
+							customAttribute.array[offset_custom + 10] = v3.z;
+							customAttribute.array[offset_custom + 11] = v3.w;
+
+							customAttribute.array[offset_custom + 12] = v4.x;
+							customAttribute.array[offset_custom + 13] = v4.y;
+							customAttribute.array[offset_custom + 14] = v4.z;
+							customAttribute.array[offset_custom + 15] = v4.w;
+
+							offset_custom += 16;
+						}
+					}
+				}
+
+				_gl.bindBuffer(_gl.ARRAY_BUFFER, customAttribute.buffer);
+				_gl.bufferData(_gl.ARRAY_BUFFER, customAttribute.array, hint);
+			}
+		}
+
+		if (dispose) {
+			delete geometryGroup.__inittedArrays;
+			delete geometryGroup.__colorArray;
+			delete geometryGroup.__normalArray;
+			delete geometryGroup.__tangentArray;
+			delete geometryGroup.__uvArray;
+			delete geometryGroup.__uv2Array;
+			delete geometryGroup.__faceArray;
+			delete geometryGroup.__vertexArray;
+			delete geometryGroup.__lineArray;
+			delete geometryGroup.__skinVertexAArray;
+			delete geometryGroup.__skinVertexBArray;
+			delete geometryGroup.__skinIndexArray;
+			delete geometryGroup.__skinWeightArray;
+		}
+	};
+
+	this.renderBufferImmediate = function (object, program, shading) {
+		if (! object.__webglVertexBuffer) object.__webglVertexBuffer = _gl.createBuffer();
+		if (! object.__webglNormalBuffer) object.__webglNormalBuffer = _gl.createBuffer();
+
+		if (object.hasPos) {
+			_gl.bindBuffer(_gl.ARRAY_BUFFER, object.__webglVertexBuffer);
+			_gl.bufferData(_gl.ARRAY_BUFFER, object.positionArray, _gl.DYNAMIC_DRAW);
+			_gl.enableVertexAttribArray(program.attributes.position);
+			_gl.vertexAttribPointer(program.attributes.position, 3, _gl.FLOAT, false, 0, 0);
+		}
+
+		if (object.hasNormal) {
+			_gl.bindBuffer(_gl.ARRAY_BUFFER, object.__webglNormalBuffer);
+
+			if (shading === FlatShading) {
+				var nx, ny, nz,
+					nax, nbx, ncx, nay, nby, ncy, naz, nbz, ncz,
+					normalArray,
+					i, il = object.count * 3;
+
+				for(i = 0; i < il; i += 9) {
+					normalArray = object.normalArray;
+
+					nax  = normalArray[i];
+					nay  = normalArray[i + 1];
+					naz  = normalArray[i + 2];
+
+					nbx  = normalArray[i + 3];
+					nby  = normalArray[i + 4];
+					nbz  = normalArray[i + 5];
+
+					ncx  = normalArray[i + 6];
+					ncy  = normalArray[i + 7];
+					ncz  = normalArray[i + 8];
+
+					nx = (nax + nbx + ncx) / 3;
+					ny = (nay + nby + ncy) / 3;
+					nz = (naz + nbz + ncz) / 3;
+
+					normalArray[i] 	 = nx;
+					normalArray[i + 1] = ny;
+					normalArray[i + 2] = nz;
+
+					normalArray[i + 3] = nx;
+					normalArray[i + 4] = ny;
+					normalArray[i + 5] = nz;
+
+					normalArray[i + 6] = nx;
+					normalArray[i + 7] = ny;
+					normalArray[i + 8] = nz;
+				}
+			}
+
+			_gl.bufferData(_gl.ARRAY_BUFFER, object.normalArray, _gl.DYNAMIC_DRAW);
+			_gl.enableVertexAttribArray(program.attributes.normal);
+			_gl.vertexAttribPointer(program.attributes.normal, 3, _gl.FLOAT, false, 0, 0);
+		}
+
+		_gl.drawArrays(_gl.TRIANGLES, 0, object.count);
+
+		object.count = 0;
+	};
+
+	this.renderBufferDirect = function (camera, lights, fog, material, geometryGroup, object) {
+		if (material.visible === false) return;
+
+		var program, attributes, linewidth, primitives, a, attribute;
+
+		program = setProgram(camera, lights, fog, material, object);
+
+		attributes = program.attributes;
+
+		var updateBuffers = false,
+			wireframeBit = material.wireframe ? 1 : 0,
+			geometryGroupHash = (geometryGroup.id * 0xffffff) + (program.id * 2) + wireframeBit;
+
+		if (geometryGroupHash !== _currentGeometryGroupHash) {
+			_currentGeometryGroupHash = geometryGroupHash;
+			updateBuffers = true;
+		}
+
+		if (object instanceof Mesh) {
+			var offsets = geometryGroup.offsets;
+
+			for (var i = 0, il = offsets.length; i < il; ++ i) {
+				if (updateBuffers) {
+					_gl.bindBuffer(_gl.ARRAY_BUFFER, geometryGroup.vertexPositionBuffer);
+					_gl.vertexAttribPointer(attributes.position, geometryGroup.vertexPositionBuffer.itemSize, _gl.FLOAT, false, 0, offsets[i].index * 4 * 3);
+
+					if (attributes.normal >= 0 && geometryGroup.vertexNormalBuffer) {
+						_gl.bindBuffer(_gl.ARRAY_BUFFER, geometryGroup.vertexNormalBuffer);
+						_gl.vertexAttribPointer(attributes.normal, geometryGroup.vertexNormalBuffer.itemSize, _gl.FLOAT, false, 0, offsets[i].index * 4 * 3);
+					}
+
+					if (attributes.uv >= 0 && geometryGroup.vertexUvBuffer) {
+						if (geometryGroup.vertexUvBuffer) {
+							_gl.bindBuffer(_gl.ARRAY_BUFFER, geometryGroup.vertexUvBuffer);
+							_gl.vertexAttribPointer( attributes.uv, geometryGroup.vertexUvBuffer.itemSize, _gl.FLOAT, false, 0, offsets[i].index * 4 * 2);
+
+							_gl.enableVertexAttribArray(attributes.uv);
 						} else {
-							markUniformsLightsNeedsUpdate(m_uniforms, false);
+							_gl.disableVertexAttribArray(attributes.uv);
 						}
 					}
 
-					if (material instanceof MeshBasicMaterial ||
-						 material instanceof MeshLambertMaterial ||
-						 material instanceof MeshPhongMaterial) {
-						refreshUniformsCommon(m_uniforms, material);
+					if (attributes.color >= 0 && geometryGroup.vertexColorBuffer) {
+						_gl.bindBuffer(_gl.ARRAY_BUFFER, geometryGroup.vertexColorBuffer);
+						_gl.vertexAttribPointer(attributes.color, geometryGroup.vertexColorBuffer.itemSize, _gl.FLOAT, false, 0, offsets[i].index * 4 * 4);
 					}
 
-					// refresh single material specific uniforms
+					_gl.bindBuffer(_gl.ELEMENT_ARRAY_BUFFER, geometryGroup.vertexIndexBuffer);
+				}
 
-					if (material instanceof LineBasicMaterial) {
-						refreshUniformsLine(m_uniforms, material);
-					} else if (material instanceof LineDashedMaterial) {
-						refreshUniformsLine(m_uniforms, material);
-						refreshUniformsDash(m_uniforms, material);
-					} else if (material instanceof PointsMaterial) {
-						refreshUniformsParticle(m_uniforms, material);
-					} else if (material instanceof MeshPhongMaterial) {
-						refreshUniformsPhong(m_uniforms, material);
-					} else if (material instanceof MeshDepthMaterial) {
-						m_uniforms.mNear.value = camera.near;
-						m_uniforms.mFar.value = camera.far;
-						m_uniforms.opacity.value = material.opacity;
-					} else if (material instanceof MeshNormalMaterial) {
-						m_uniforms.opacity.value = material.opacity;
+				_gl.drawElements(_gl.TRIANGLES, offsets[i].count, _gl.UNSIGNED_SHORT, offsets[i].start * 2);
+
+				_this.info.render.calls ++;
+				_this.info.render.vertices += offsets[i].count;
+				_this.info.render.faces += offsets[i].count / 3;
+			}
+		}
+	};
+
+	this.renderBuffer = function (camera, lights, fog, material, geometryGroup, object) {
+		if (material.visible === false) return;
+
+		var program, attributes, linewidth, primitives, a, attribute, i, il;
+
+		program = setProgram(camera, lights, fog, material, object);
+
+		attributes = program.attributes;
+
+		var updateBuffers = false,
+			wireframeBit = material.wireframe ? 1 : 0,
+			geometryGroupHash = (geometryGroup.id * 0xffffff) + (program.id * 2) + wireframeBit;
+
+		if (geometryGroupHash !== _currentGeometryGroupHash) {
+			_currentGeometryGroupHash = geometryGroupHash;
+			updateBuffers = true;
+		}
+
+		if (!material.morphTargets && attributes.position >= 0) {
+			if (updateBuffers) {
+				_gl.bindBuffer(_gl.ARRAY_BUFFER, geometryGroup.__webglVertexBuffer);
+				_gl.vertexAttribPointer(attributes.position, 3, _gl.FLOAT, false, 0, 0);
+			}
+		} else {
+			if (object.morphTargetBase) {
+				setupMorphTargets(material, geometryGroup, object);
+			}
+		}
+
+		if (updateBuffers) {
+			if (geometryGroup.__webglCustomAttributesList) {
+				for (i = 0, il = geometryGroup.__webglCustomAttributesList.length; i < il; i ++) {
+					attribute = geometryGroup.__webglCustomAttributesList[i];
+
+					if(attributes[attribute.buffer.belongsToAttribute] >= 0) {
+						_gl.bindBuffer(_gl.ARRAY_BUFFER, attribute.buffer);
+						_gl.vertexAttribPointer(attributes[attribute.buffer.belongsToAttribute], attribute.size, _gl.FLOAT, false, 0, 0);
 					}
+				}
+			}
 
-					if (object.receiveShadow && ! material._shadowPass) {
-						refreshUniformsShadow(m_uniforms, lights, camera);
+			if (attributes.color >= 0) {
+				_gl.bindBuffer(_gl.ARRAY_BUFFER, geometryGroup.__webglColorBuffer);
+				_gl.vertexAttribPointer(attributes.color, 3, _gl.FLOAT, false, 0, 0);
+			}
+
+			if (attributes.normal >= 0) {
+				_gl.bindBuffer(_gl.ARRAY_BUFFER, geometryGroup.__webglNormalBuffer);
+				_gl.vertexAttribPointer(attributes.normal, 3, _gl.FLOAT, false, 0, 0);
+			}
+
+			if (attributes.tangent >= 0) {
+				_gl.bindBuffer(_gl.ARRAY_BUFFER, geometryGroup.__webglTangentBuffer);
+				_gl.vertexAttribPointer(attributes.tangent, 4, _gl.FLOAT, false, 0, 0);
+			}
+
+			if (attributes.uv >= 0) {
+				if (geometryGroup.__webglUVBuffer) {
+					_gl.bindBuffer(_gl.ARRAY_BUFFER, geometryGroup.__webglUVBuffer);
+					_gl.vertexAttribPointer(attributes.uv, 2, _gl.FLOAT, false, 0, 0);
+
+					_gl.enableVertexAttribArray(attributes.uv);
+				} else {
+					_gl.disableVertexAttribArray(attributes.uv);
+				}
+			}
+
+			if (attributes.uv2 >= 0) {
+				if (geometryGroup.__webglUV2Buffer) {
+					_gl.bindBuffer(_gl.ARRAY_BUFFER, geometryGroup.__webglUV2Buffer);
+					_gl.vertexAttribPointer(attributes.uv2, 2, _gl.FLOAT, false, 0, 0);
+
+					_gl.enableVertexAttribArray(attributes.uv2);
+				} else {
+					_gl.disableVertexAttribArray(attributes.uv2);
+				}
+			}
+
+			if (material.skinning &&
+				 attributes.skinVertexA >= 0 && attributes.skinVertexB >= 0 &&
+				 attributes.skinIndex >= 0 && attributes.skinWeight >= 0) {
+				_gl.bindBuffer(_gl.ARRAY_BUFFER, geometryGroup.__webglSkinVertexABuffer);
+				_gl.vertexAttribPointer(attributes.skinVertexA, 4, _gl.FLOAT, false, 0, 0);
+
+				_gl.bindBuffer(_gl.ARRAY_BUFFER, geometryGroup.__webglSkinVertexBBuffer);
+				_gl.vertexAttribPointer(attributes.skinVertexB, 4, _gl.FLOAT, false, 0, 0);
+
+				_gl.bindBuffer(_gl.ARRAY_BUFFER, geometryGroup.__webglSkinIndicesBuffer);
+				_gl.vertexAttribPointer(attributes.skinIndex, 4, _gl.FLOAT, false, 0, 0);
+
+				_gl.bindBuffer(_gl.ARRAY_BUFFER, geometryGroup.__webglSkinWeightsBuffer);
+				_gl.vertexAttribPointer(attributes.skinWeight, 4, _gl.FLOAT, false, 0, 0);
+			}
+		}
+
+		if (object instanceof Mesh) {
+			if (material.wireframe) {
+				setLineWidth(material.wireframeLinewidth);
+
+				if (updateBuffers) _gl.bindBuffer(_gl.ELEMENT_ARRAY_BUFFER, geometryGroup.__webglLineBuffer);
+				_gl.drawElements(_gl.LINES, geometryGroup.__webglLineCount, _gl.UNSIGNED_SHORT, 0);
+			} else {
+				if (updateBuffers) _gl.bindBuffer(_gl.ELEMENT_ARRAY_BUFFER, geometryGroup.__webglFaceBuffer);
+				_gl.drawElements(_gl.TRIANGLES, geometryGroup.__webglFaceCount, _gl.UNSIGNED_SHORT, 0);
+			}
+
+			_this.info.render.calls ++;
+			_this.info.render.vertices += geometryGroup.__webglFaceCount;
+			_this.info.render.faces += geometryGroup.__webglFaceCount / 3;
+		} else if (object instanceof Line) {
+			primitives = (object.type === LineStrip) ? _gl.LINE_STRIP : _gl.LINES;
+
+			setLineWidth(material.linewidth);
+
+			_gl.drawArrays(primitives, 0, geometryGroup.__webglLineCount);
+
+			_this.info.render.calls ++;
+		} else if (object instanceof ParticleSystem) {
+			_gl.drawArrays(_gl.POINTS, 0, geometryGroup.__webglParticleCount);
+
+			_this.info.render.calls ++;
+			_this.info.render.points += geometryGroup.__webglParticleCount;
+		} else if (object instanceof Ribbon) {
+			_gl.drawArrays(_gl.TRIANGLE_STRIP, 0, geometryGroup.__webglVertexCount);
+
+			_this.info.render.calls ++;
+		}
+	};
+
+	function setupMorphTargets (material, geometryGroup, object) {
+		var attributes = material.program.attributes;
+
+		if (object.morphTargetBase !== - 1) {
+			_gl.bindBuffer(_gl.ARRAY_BUFFER, geometryGroup.__webglMorphTargetsBuffers[object.morphTargetBase]);
+			_gl.vertexAttribPointer(attributes.position, 3, _gl.FLOAT, false, 0, 0);
+		} else if (attributes.position >= 0) {
+			_gl.bindBuffer(_gl.ARRAY_BUFFER, geometryGroup.__webglVertexBuffer);
+			_gl.vertexAttribPointer(attributes.position, 3, _gl.FLOAT, false, 0, 0);
+		}
+
+		if (object.morphTargetForcedOrder.length) {
+			var m = 0;
+			var order = object.morphTargetForcedOrder;
+			var influences = object.morphTargetInfluences;
+
+			while (m < material.numSupportedMorphTargets && m < order.length) {
+				_gl.bindBuffer(_gl.ARRAY_BUFFER, geometryGroup.__webglMorphTargetsBuffers[order[m]]);
+				_gl.vertexAttribPointer(attributes["morphTarget" + m], 3, _gl.FLOAT, false, 0, 0);
+
+				if (material.morphNormals) {
+					_gl.bindBuffer(_gl.ARRAY_BUFFER, geometryGroup.__webglMorphNormalsBuffers[order[m]]);
+					_gl.vertexAttribPointer(attributes["morphNormal" + m], 3, _gl.FLOAT, false, 0, 0);
+				}
+
+				object.__webglMorphTargetInfluences[m] = influences[order[m]];
+
+				m ++;
+			}
+		} else {
+			var used = [];
+			var candidateInfluence = - 1;
+			var candidate = 0;
+			var influences = object.morphTargetInfluences;
+			var i, il = influences.length;
+			var m = 0;
+
+			if (object.morphTargetBase !== - 1) {
+				used[object.morphTargetBase] = true;
+			}
+
+			while (m < material.numSupportedMorphTargets) {
+				for (i = 0; i < il; i ++) {
+					if (!used[i] && influences[i] > candidateInfluence) {
+						candidate = i;
+						candidateInfluence = influences[candidate];
 					}
-
-					// load common uniforms
-
-					loadUniformsGeneric(materialProperties.uniformsList);
 				}
 
-				loadUniformsMatrices(p_uniforms, object);
+				_gl.bindBuffer(_gl.ARRAY_BUFFER, geometryGroup.__webglMorphTargetsBuffers[candidate]);
+				_gl.vertexAttribPointer(attributes["morphTarget" + m], 3, _gl.FLOAT, false, 0, 0);
 
-				if (p_uniforms.modelMatrix !== undefined) {
-					_gl.uniformMatrix4fv(p_uniforms.modelMatrix, false, object.matrixWorld.elements);
+				if (material.morphNormals) {
+					_gl.bindBuffer(_gl.ARRAY_BUFFER, geometryGroup.__webglMorphNormalsBuffers[candidate]);
+					_gl.vertexAttribPointer(attributes["morphNormal" + m], 3, _gl.FLOAT, false, 0, 0);
 				}
 
-				return program;
+				object.__webglMorphTargetInfluences[m] = candidateInfluence;
+
+				used[candidate] = 1;
+				candidateInfluence = -1;
+				m ++;
 			}
+		}
 
-			// Uniforms (refresh uniforms objects)
+		if(material.program.uniforms.morphTargetInfluences !== null) {
+			_gl.uniform1fv(material.program.uniforms.morphTargetInfluences, object.__webglMorphTargetInfluences);
+		}
+	};
 
-			function refreshUniformsCommon (uniforms, material) {
-				uniforms.opacity.value = material.opacity;
+	function painterSort (a, b) {
+		return b.z - a.z;
+	};
 
-				uniforms.diffuse.value = material.color;
+	this.render = function (scene, camera, renderTarget, forceClear) {
+		var i, il,
 
-				if (material.emissive) {
-					uniforms.emissive.value = material.emissive;
-				}
+		webglObject, object,
+		renderList,
 
-				uniforms.map.value = material.map;
-				uniforms.specularMap.value = material.specularMap;
-				uniforms.alphaMap.value = material.alphaMap;
+		lights = scene.__lights,
+		fog = scene.fog;
 
-				if (material.aoMap) {
-					uniforms.aoMap.value = material.aoMap;
-					uniforms.aoMapIntensity.value = material.aoMapIntensity;
-				}
+		_currentMaterialId = -1;
+		_lightsNeedUpdate = true;
 
-				// uv repeat and offset setting priorities
-				// 1. color map
-				// 2. specular map
-				// 3. normal map
-				// 4. bump map
-				// 5. alpha map
-				// 6. emissive map
+		if (camera.parent === undefined) {
+			console.warn('DEPRECATED: Camera hasn\'t been added to a Scene. Adding it...');
+			scene.add(camera);
+		}
 
-				var uvScaleMap;
+		if (this.autoUpdateScene) scene.updateMatrixWorld();
 
-				if (material.map) {
-					uvScaleMap = material.map;
-				} else if (material.specularMap) {
-					uvScaleMap = material.specularMap;
-				} else if (material.displacementMap) {
-					uvScaleMap = material.displacementMap;
-				} else if (material.normalMap) {
-					uvScaleMap = material.normalMap;
-				} else if (material.bumpMap) {
-					uvScaleMap = material.bumpMap;
-				} else if (material.alphaMap) {
-					uvScaleMap = material.alphaMap;
-				} else if (material.emissiveMap) {
-					uvScaleMap = material.emissiveMap;
-				}
+		if (! camera._viewMatrixArray) camera._viewMatrixArray = new Float32Array(16);
+		if (! camera._projectionMatrixArray) camera._projectionMatrixArray = new Float32Array(16);
 
-				if (uvScaleMap !== undefined) {
-					if (uvScaleMap instanceof WebGLRenderTarget) uvScaleMap = uvScaleMap.texture;
-					var offset = uvScaleMap.offset;
-					var repeat = uvScaleMap.repeat;
+		camera.matrixWorldInverse.getInverse(camera.matrixWorld);
 
-					uniforms.offsetRepeat.value.set(offset.x, offset.y, repeat.x, repeat.y);
-				}
+		camera.matrixWorldInverse.flattenToArray(camera._viewMatrixArray);
+		camera.projectionMatrix.flattenToArray(camera._projectionMatrixArray);
 
-				uniforms.envMap.value = material.envMap;
-				uniforms.flipEnvMap.value = (material.envMap instanceof WebGLRenderTargetCube) ? 1 : - 1;
+		_projScreenMatrix.multiply(camera.projectionMatrix, camera.matrixWorldInverse);
+		_frustum.setFromMatrix(_projScreenMatrix);
 
-				uniforms.reflectivity.value = material.reflectivity;
-				uniforms.refractionRatio.value = material.refractionRatio;
-			}
+		if (this.autoUpdateObjects) this.initWebGLObjects(scene);
 
-			function refreshUniformsLine (uniforms, material) {
-				uniforms.diffuse.value = material.color;
-				uniforms.opacity.value = material.opacity;
-			}
+		renderPlugins(this.renderPluginsPre, scene, camera);
 
-			function refreshUniformsDash (uniforms, material) {
-				uniforms.dashSize.value = material.dashSize;
-				uniforms.totalSize.value = material.dashSize + material.gapSize;
-				uniforms.scale.value = material.scale;
-			}
+		_this.info.render.calls = 0;
+		_this.info.render.vertices = 0;
+		_this.info.render.faces = 0;
+		_this.info.render.points = 0;
 
-			function refreshUniformsParticle (uniforms, material) {
-				uniforms.psColor.value = material.color;
-				uniforms.opacity.value = material.opacity;
-				uniforms.size.value = material.size;
-				uniforms.scale.value = _canvas.height / 2.0; // TODO: Cache this.
+		this.setRenderTarget(renderTarget);
 
-				uniforms.map.value = material.map;
+		if (this.autoClear || forceClear) {
+			this.clear(this.autoClearColor, this.autoClearDepth, this.autoClearStencil);
+		}
 
-				if (material.map !== null) {
-					var offset = material.map.offset;
-					var repeat = material.map.repeat;
+		renderList = scene.__webglObjects;
 
-					uniforms.offsetRepeat.value.set(offset.x, offset.y, repeat.x, repeat.y);
-				}
-			}
+		for (i = 0, il = renderList.length; i < il; i ++) {
+			webglObject = renderList[i];
+			object = webglObject.object;
 
-			function refreshUniformsFog (uniforms, fog) {
-				uniforms.fogColor.value = fog.color;
+			webglObject.render = false;
 
-				if (fog instanceof Fog) {
-					uniforms.fogNear.value = fog.near;
-					uniforms.fogFar.value = fog.far;
-				} else if (fog instanceof FogExp2) {
-					uniforms.fogDensity.value = fog.density;
-				}
-			}
+			if (object.visible) {
+				if (! (object instanceof Mesh || object instanceof ParticleSystem) || ! (object.frustumCulled) || _frustum.contains(object)) {
+					setupMatrices(object, camera);
 
-			function refreshUniformsPhong (uniforms, material) {
-				uniforms.specular.value = material.specular;
-				uniforms.shininess.value = Math.max(material.shininess, 1e-4); // to prevent pow(0.0, 0.0)
+					unrollBufferMaterial(webglObject);
 
-				if (material.lightMap) {
-					uniforms.lightMap.value = material.lightMap;
-					uniforms.lightMapIntensity.value = material.lightMapIntensity;
-				}
+					webglObject.render = true;
 
-				if (material.emissiveMap) {
-					uniforms.emissiveMap.value = material.emissiveMap;
-				}
+					if (this.sortObjects) {
+						if (object.renderDepth) {
+							webglObject.z = object.renderDepth;
+						} else {
+							_vector3.copy(object.matrixWorld.getPosition());
+							_projScreenMatrix.multiplyVector3(_vector3);
 
-				if (material.bumpMap) {
-					uniforms.bumpMap.value = material.bumpMap;
-					uniforms.bumpScale.value = material.bumpScale;
-				}
-
-				if (material.normalMap) {
-					uniforms.normalMap.value = material.normalMap;
-					uniforms.normalScale.value.copy(material.normalScale);
-				}
-
-				if (material.displacementMap) {
-					uniforms.displacementMap.value = material.displacementMap;
-					uniforms.displacementScale.value = material.displacementScale;
-					uniforms.displacementBias.value = material.displacementBias;
-				}
-			}
-
-			function refreshUniformsLights (uniforms, lights) {
-				uniforms.ambientLightColor.value = lights.ambient;
-
-				uniforms.directionalLightColor.value = lights.directional.colors;
-				uniforms.directionalLightDirection.value = lights.directional.positions;
-
-				uniforms.pointLightColor.value = lights.point.colors;
-				uniforms.pointLightPosition.value = lights.point.positions;
-				uniforms.pointLightDistance.value = lights.point.distances;
-				uniforms.pointLightDecay.value = lights.point.decays;
-
-				uniforms.spotLightColor.value = lights.spot.colors;
-				uniforms.spotLightPosition.value = lights.spot.positions;
-				uniforms.spotLightDistance.value = lights.spot.distances;
-				uniforms.spotLightDirection.value = lights.spot.directions;
-				uniforms.spotLightAngleCos.value = lights.spot.anglesCos;
-				uniforms.spotLightExponent.value = lights.spot.exponents;
-				uniforms.spotLightDecay.value = lights.spot.decays;
-
-				uniforms.hemisphereLightSkyColor.value = lights.hemi.skyColors;
-				uniforms.hemisphereLightGroundColor.value = lights.hemi.groundColors;
-				uniforms.hemisphereLightDirection.value = lights.hemi.positions;
-			}
-
-			// If uniforms are marked as clean, they don't need to be loaded to the GPU.
-
-			function markUniformsLightsNeedsUpdate (uniforms, value) {
-				uniforms.ambientLightColor.needsUpdate = value;
-
-				uniforms.directionalLightColor.needsUpdate = value;
-				uniforms.directionalLightDirection.needsUpdate = value;
-
-				uniforms.pointLightColor.needsUpdate = value;
-				uniforms.pointLightPosition.needsUpdate = value;
-				uniforms.pointLightDistance.needsUpdate = value;
-				uniforms.pointLightDecay.needsUpdate = value;
-
-				uniforms.spotLightColor.needsUpdate = value;
-				uniforms.spotLightPosition.needsUpdate = value;
-				uniforms.spotLightDistance.needsUpdate = value;
-				uniforms.spotLightDirection.needsUpdate = value;
-				uniforms.spotLightAngleCos.needsUpdate = value;
-				uniforms.spotLightExponent.needsUpdate = value;
-				uniforms.spotLightDecay.needsUpdate = value;
-
-				uniforms.hemisphereLightSkyColor.needsUpdate = value;
-				uniforms.hemisphereLightGroundColor.needsUpdate = value;
-				uniforms.hemisphereLightDirection.needsUpdate = value;
-			}
-
-			function refreshUniformsShadow (uniforms, lights, camera) {
-				if (uniforms.shadowMatrix) {
-					var j = 0;
-
-					for (var i = 0, il = lights.length; i < il; i ++) {
-						var light = lights[ i ];
-
-						if (light.castShadow === true) {
-							if (light instanceof PointLight || light instanceof SpotLight || light instanceof DirectionalLight) {
-								var shadow = light.shadow;
-
-								if (light instanceof PointLight) {
-									// for point lights we set the shadow matrix to be a translation-only matrix
-									// equal to inverse of the light's position
-									_vector3.setFromMatrixPosition(light.matrixWorld).negate();
-									shadow.matrix.identity().setPosition(_vector3);
-
-									// for point lights we set the sign of the shadowDarkness uniform to be negative
-									uniforms.shadowDarkness.value[ j ] = - shadow.darkness;
-								} else {
-									uniforms.shadowDarkness.value[ j ] = shadow.darkness;
-								}
-
-								uniforms.shadowMatrix.value[ j ] = shadow.matrix;
-								uniforms.shadowMap.value[ j ] = shadow.map;
-								uniforms.shadowMapSize.value[ j ] = shadow.mapSize;
-								uniforms.shadowBias.value[ j ] = shadow.bias;
-
-								j ++;
-							}
+							webglObject.z = _vector3.z;
 						}
 					}
 				}
 			}
+		}
 
-			// Uniforms (load to GPU)
+		if (this.sortObjects) {
+			renderList.sort(painterSort);
+		}
 
-			function loadUniformsMatrices (uniforms, object) {
-				_gl.uniformMatrix4fv(uniforms.modelViewMatrix, false, object.modelViewMatrix.elements);
+		renderList = scene.__webglObjectsImmediate;
 
-				if (uniforms.normalMatrix) {
-					_gl.uniformMatrix3fv(uniforms.normalMatrix, false, object.normalMatrix.elements);
-				}
+		for (i = 0, il = renderList.length; i < il; i ++) {
+			webglObject = renderList[i];
+			object = webglObject.object;
+
+			if (object.visible) {
+
+				setupMatrices(object, camera);
+
+				unrollImmediateBufferMaterial(webglObject);
 			}
-
-			function getTextureUnit() {
-				var textureUnit = _usedTextureUnits;
-
-				if (textureUnit >= capabilities.maxTextures) {
-					console.warn('WebGLRenderer: trying to use ' + textureUnit + ' texture units while this GPU supports only ' + capabilities.maxTextures);
-				}
-
-				_usedTextureUnits += 1;
-
-				return textureUnit;
-			}
-
-			function loadUniformsGeneric (uniforms) {
-				var texture, textureUnit;
-
-				for (var j = 0, jl = uniforms.length; j < jl; j ++) {
-					var uniform = uniforms[ j ][ 0 ];
-
-					// needsUpdate property is not added to all uniforms.
-					if (uniform.needsUpdate === false) continue;
-
-					var type = uniform.type;
-					var value = uniform.value;
-					var location = uniforms[ j ][ 1 ];
-
-					switch (type) {
-						case '1i':
-							_gl.uniform1i(location, value);
-							break;
-
-						case '1f':
-							_gl.uniform1f(location, value);
-							break;
-
-						case '2f':
-							_gl.uniform2f(location, value[ 0 ], value[ 1 ]);
-							break;
-
-						case '3f':
-							_gl.uniform3f(location, value[ 0 ], value[ 1 ], value[ 2 ]);
-							break;
-
-						case '4f':
-							_gl.uniform4f(location, value[ 0 ], value[ 1 ], value[ 2 ], value[ 3 ]);
-							break;
-
-						case '1iv':
-							_gl.uniform1iv(location, value);
-							break;
-
-						case '3iv':
-							_gl.uniform3iv(location, value);
-							break;
-
-						case '1fv':
-							_gl.uniform1fv(location, value);
-							break;
-
-						case '2fv':
-							_gl.uniform2fv(location, value);
-							break;
-
-						case '3fv':
-							_gl.uniform3fv(location, value);
-							break;
-
-						case '4fv':
-							_gl.uniform4fv(location, value);
-							break;
-
-						case 'Matrix3fv':
-							_gl.uniformMatrix3fv(location, false, value);
-							break;
-
-						case 'Matrix4fv':
-							_gl.uniformMatrix4fv(location, false, value);
-							break;
-
-						//
-
-						case 'i':
-
-							// single integer
-							_gl.uniform1i(location, value);
-
-							break;
-
-						case 'f':
-
-							// single float
-							_gl.uniform1f(location, value);
-
-							break;
-
-						case 'v2':
-
-							// single Vector2
-							_gl.uniform2f(location, value.x, value.y);
-
-							break;
-
-						case 'v3':
-
-							// single Vector3
-							_gl.uniform3f(location, value.x, value.y, value.z);
-
-							break;
-
-						case 'v4':
-
-							// single Vector4
-							_gl.uniform4f(location, value.x, value.y, value.z, value.w);
-
-							break;
-
-						case 'c':
-
-							// single Color
-							_gl.uniform3f(location, value.r, value.g, value.b);
-
-							break;
-
-						case 'iv1':
-
-							// flat array of integers (JS or typed array)
-							_gl.uniform1iv(location, value);
-
-							break;
-
-						case 'iv':
-
-							// flat array of integers with 3 x N size (JS or typed array)
-							_gl.uniform3iv(location, value);
-
-							break;
-
-						case 'fv1':
-
-							// flat array of floats (JS or typed array)
-							_gl.uniform1fv(location, value);
-
-							break;
-
-						case 'fv':
-
-							// flat array of floats with 3 x N size (JS or typed array)
-							_gl.uniform3fv(location, value);
-
-							break;
-
-						case 'v2v':
-
-							// array of Vector2
-
-							if (uniform._array === undefined) {
-								uniform._array = new Float32Array(2 * value.length);
-							}
-
-							for (var i = 0, i2 = 0, il = value.length; i < il; i ++, i2 += 2) {
-								uniform._array[ i2 + 0 ] = value[ i ].x;
-								uniform._array[ i2 + 1 ] = value[ i ].y;
-							}
-
-							_gl.uniform2fv(location, uniform._array);
-
-							break;
-
-						case 'v3v':
-
-							// array of Vector3
-
-							if (uniform._array === undefined) {
-								uniform._array = new Float32Array(3 * value.length);
-							}
-
-							for (var i = 0, i3 = 0, il = value.length; i < il; i ++, i3 += 3) {
-								uniform._array[ i3 + 0 ] = value[ i ].x;
-								uniform._array[ i3 + 1 ] = value[ i ].y;
-								uniform._array[ i3 + 2 ] = value[ i ].z;
-							}
-
-							_gl.uniform3fv(location, uniform._array);
-
-							break;
-
-						case 'v4v':
-
-							// array of Vector4
-
-							if (uniform._array === undefined) {
-								uniform._array = new Float32Array(4 * value.length);
-							}
-
-							for (var i = 0, i4 = 0, il = value.length; i < il; i ++, i4 += 4) {
-								uniform._array[ i4 + 0 ] = value[ i ].x;
-								uniform._array[ i4 + 1 ] = value[ i ].y;
-								uniform._array[ i4 + 2 ] = value[ i ].z;
-								uniform._array[ i4 + 3 ] = value[ i ].w;
-							}
-
-							_gl.uniform4fv(location, uniform._array);
-
-							break;
-
-						case 'm3':
-
-							// single Matrix3
-							_gl.uniformMatrix3fv(location, false, value.elements);
-
-							break;
-
-						case 'm3v':
-
-							// array of Matrix3
-
-							if (uniform._array === undefined) {
-								uniform._array = new Float32Array(9 * value.length);
-							}
-
-							for (var i = 0, il = value.length; i < il; i ++) {
-								value[ i ].flattenToArrayOffset(uniform._array, i * 9);
-							}
-
-							_gl.uniformMatrix3fv(location, false, uniform._array);
-
-							break;
-
-						case 'm4':
-
-							// single Matrix4
-							_gl.uniformMatrix4fv(location, false, value.elements);
-
-							break;
-
-						case 'm4v':
-
-							// array of Matrix4
-
-							if (uniform._array === undefined) {
-								uniform._array = new Float32Array(16 * value.length);
-							}
-
-							for (var i = 0, il = value.length; i < il; i ++) {
-								value[ i ].flattenToArrayOffset(uniform._array, i * 16);
-							}
-
-							_gl.uniformMatrix4fv(location, false, uniform._array);
-
-							break;
-
-						case 't':
-
-							// single Texture (2d or cube)
-
-							texture = value;
-							textureUnit = getTextureUnit();
-
-							_gl.uniform1i(location, textureUnit);
-
-							if (! texture) continue;
-
-							if (texture instanceof CubeTexture ||
-								 (Array.isArray(texture.image) && texture.image.length === 6)) {
-								// CompressedTexture can have Array in image :/
-
-								setCubeTexture(texture, textureUnit);
-							} else if (texture instanceof WebGLRenderTargetCube) {
-								setCubeTextureDynamic(texture.texture, textureUnit);
-							} else if (texture instanceof WebGLRenderTarget) {
-								_this.setTexture(texture.texture, textureUnit);
-							} else {
-								_this.setTexture(texture, textureUnit);
-							}
-
-							break;
-
-						case 'tv':
-
-							// array of Texture (2d or cube)
-
-							if (uniform._array === undefined) {
-								uniform._array = [];
-							}
-
-							for (var i = 0, il = uniform.value.length; i < il; i ++) {
-								uniform._array[ i ] = getTextureUnit();
-							}
-
-							_gl.uniform1iv(location, uniform._array);
-
-							for (var i = 0, il = uniform.value.length; i < il; i ++) {
-								texture = uniform.value[ i ];
-								textureUnit = uniform._array[ i ];
-
-								if (! texture) continue;
-
-								if (texture instanceof CubeTexture ||
-									 (texture.image instanceof Array && texture.image.length === 6)) {
-									// CompressedTexture can have Array in image :/
-
-									setCubeTexture(texture, textureUnit);
-								} else if (texture instanceof WebGLRenderTarget) {
-									_this.setTexture(texture.texture, textureUnit);
-								} else if (texture instanceof WebGLRenderTargetCube) {
-									setCubeTextureDynamic(texture.texture, textureUnit);
-								} else {
-									_this.setTexture(texture, textureUnit);
-								}
-							}
-
-							break;
-
-						default:
-
-							console.warn('WebGLRenderer: Unknown uniform type: ' + type);
-					}
-				}
-			}
-
-			function setColorLinear(array, offset, color, intensity) {
-				array[ offset + 0 ] = color.r * intensity;
-				array[ offset + 1 ] = color.g * intensity;
-				array[ offset + 2 ] = color.b * intensity;
-			}
-
-			function setupLights (lights, camera) {
-				var l, ll, light,
-				r = 0, g = 0, b = 0,
-				color, skyColor, groundColor,
-				intensity,
-				distance,
-
-				zlights = _lights,
-
-				viewMatrix = camera.matrixWorldInverse,
-
-				dirColors = zlights.directional.colors,
-				dirPositions = zlights.directional.positions,
-
-				pointColors = zlights.point.colors,
-				pointPositions = zlights.point.positions,
-				pointDistances = zlights.point.distances,
-				pointDecays = zlights.point.decays,
-
-				spotColors = zlights.spot.colors,
-				spotPositions = zlights.spot.positions,
-				spotDistances = zlights.spot.distances,
-				spotDirections = zlights.spot.directions,
-				spotAnglesCos = zlights.spot.anglesCos,
-				spotExponents = zlights.spot.exponents,
-				spotDecays = zlights.spot.decays,
-
-				hemiSkyColors = zlights.hemi.skyColors,
-				hemiGroundColors = zlights.hemi.groundColors,
-				hemiPositions = zlights.hemi.positions,
-
-				dirLength = 0,
-				pointLength = 0,
-				spotLength = 0,
-				hemiLength = 0,
-
-				dirCount = 0,
-				pointCount = 0,
-				spotCount = 0,
-				hemiCount = 0,
-
-				dirOffset = 0,
-				pointOffset = 0,
-				spotOffset = 0,
-				hemiOffset = 0;
-
-				for (l = 0, ll = lights.length; l < ll; l ++) {
-					light = lights[ l ];
-
-					color = light.color;
-					intensity = light.intensity;
-					distance = light.distance;
-
-					if (light instanceof AmbientLight) {
-						if (! light.visible) continue;
-
-						r += color.r;
-						g += color.g;
-						b += color.b;
-					} else if (light instanceof DirectionalLight) {
-						dirCount += 1;
-
-						if (! light.visible) continue;
-
-						_direction.setFromMatrixPosition(light.matrixWorld);
-						_vector3.setFromMatrixPosition(light.target.matrixWorld);
-						_direction.sub(_vector3);
-						_direction.transformDirection(viewMatrix);
-
-						dirOffset = dirLength * 3;
-
-						dirPositions[ dirOffset + 0 ] = _direction.x;
-						dirPositions[ dirOffset + 1 ] = _direction.y;
-						dirPositions[ dirOffset + 2 ] = _direction.z;
-
-						setColorLinear(dirColors, dirOffset, color, intensity);
-
-						dirLength += 1;
-					} else if (light instanceof PointLight) {
-						pointCount += 1;
-
-						if (! light.visible) continue;
-
-						pointOffset = pointLength * 3;
-
-						setColorLinear(pointColors, pointOffset, color, intensity);
-
-						_vector3.setFromMatrixPosition(light.matrixWorld);
-						_vector3.applyMatrix4(viewMatrix);
-
-						pointPositions[ pointOffset + 0 ] = _vector3.x;
-						pointPositions[ pointOffset + 1 ] = _vector3.y;
-						pointPositions[ pointOffset + 2 ] = _vector3.z;
-
-						// distance is 0 if decay is 0, because there is no attenuation at all.
-						pointDistances[ pointLength ] = distance;
-						pointDecays[ pointLength ] = (light.distance === 0) ? 0.0 : light.decay;
-
-						pointLength += 1;
-					} else if (light instanceof SpotLight) {
-						spotCount += 1;
-
-						if (! light.visible) continue;
-
-						spotOffset = spotLength * 3;
-
-						setColorLinear(spotColors, spotOffset, color, intensity);
-
-						_direction.setFromMatrixPosition(light.matrixWorld);
-						_vector3.copy(_direction).applyMatrix4(viewMatrix);
-
-						spotPositions[ spotOffset + 0 ] = _vector3.x;
-						spotPositions[ spotOffset + 1 ] = _vector3.y;
-						spotPositions[ spotOffset + 2 ] = _vector3.z;
-
-						spotDistances[ spotLength ] = distance;
-
-						_vector3.setFromMatrixPosition(light.target.matrixWorld);
-						_direction.sub(_vector3);
-						_direction.transformDirection(viewMatrix);
-
-						spotDirections[ spotOffset + 0 ] = _direction.x;
-						spotDirections[ spotOffset + 1 ] = _direction.y;
-						spotDirections[ spotOffset + 2 ] = _direction.z;
-
-						spotAnglesCos[ spotLength ] = Math.cos(light.angle);
-						spotExponents[ spotLength ] = light.exponent;
-						spotDecays[ spotLength ] = (light.distance === 0) ? 0.0 : light.decay;
-
-						spotLength += 1;
-					} else if (light instanceof HemisphereLight) {
-						hemiCount += 1;
-
-						if (! light.visible) continue;
-
-						_direction.setFromMatrixPosition(light.matrixWorld);
-						_direction.transformDirection(viewMatrix);
-
-						hemiOffset = hemiLength * 3;
-
-						hemiPositions[ hemiOffset + 0 ] = _direction.x;
-						hemiPositions[ hemiOffset + 1 ] = _direction.y;
-						hemiPositions[ hemiOffset + 2 ] = _direction.z;
-
-						skyColor = light.color;
-						groundColor = light.groundColor;
-
-						setColorLinear(hemiSkyColors, hemiOffset, skyColor, intensity);
-						setColorLinear(hemiGroundColors, hemiOffset, groundColor, intensity);
-
-						hemiLength += 1;
-					}
-				}
-
-				// null eventual remains from removed lights
-				// (this is to avoid if in shader)
-
-				for (l = dirLength * 3, ll = Math.max(dirColors.length, dirCount * 3); l < ll; l ++) dirColors[ l ] = 0.0;
-				for (l = pointLength * 3, ll = Math.max(pointColors.length, pointCount * 3); l < ll; l ++) pointColors[ l ] = 0.0;
-				for (l = spotLength * 3, ll = Math.max(spotColors.length, spotCount * 3); l < ll; l ++) spotColors[ l ] = 0.0;
-				for (l = hemiLength * 3, ll = Math.max(hemiSkyColors.length, hemiCount * 3); l < ll; l ++) hemiSkyColors[ l ] = 0.0;
-				for (l = hemiLength * 3, ll = Math.max(hemiGroundColors.length, hemiCount * 3); l < ll; l ++) hemiGroundColors[ l ] = 0.0;
-
-				zlights.directional.length = dirLength;
-				zlights.point.length = pointLength;
-				zlights.spot.length = spotLength;
-				zlights.hemi.length = hemiLength;
-
-				zlights.ambient[ 0 ] = r;
-				zlights.ambient[ 1 ] = g;
-				zlights.ambient[ 2 ] = b;
-			}
-
-			// GL state setting
-
-			this.setFaceCulling = function (cullFace, frontFaceDirection) {
-				if (cullFace === CullFaceNone) {
-					state.disable(_gl.CULL_FACE);
+		}
+
+		if (scene.overrideMaterial) {
+			var material = scene.overrideMaterial;
+
+			this.setBlending(material.blending, material.blendEquation, material.blendSrc, material.blendDst);
+			this.setDepthTest(material.depthTest);
+			this.setDepthWrite(material.depthWrite);
+			setPolygonOffset(material.polygonOffset, material.polygonOffsetFactor, material.polygonOffsetUnits);
+
+			renderObjects(scene.__webglObjects, false, "", camera, lights, fog, true, material);
+			renderObjectsImmediate(scene.__webglObjectsImmediate, "", camera, lights, fog, false, material);
+		} else {
+			this.setBlending(NormalBlending);
+
+			renderObjects(scene.__webglObjects, true, "opaque", camera, lights, fog, false);
+			renderObjectsImmediate(scene.__webglObjectsImmediate, "opaque", camera, lights, fog, false);
+
+			renderObjects(scene.__webglObjects, false, "transparent", camera, lights, fog, true);
+			renderObjectsImmediate(scene.__webglObjectsImmediate, "transparent", camera, lights, fog, true);
+		}
+
+		renderPlugins(this.renderPluginsPost, scene, camera);
+
+		if (renderTarget && renderTarget.generateMipmaps && renderTarget.minFilter !== NearestFilter && renderTarget.minFilter !== LinearFilter) {
+			updateRenderTargetMipmap(renderTarget);
+		}
+
+		this.setDepthTest(true);
+		this.setDepthWrite(true);
+	};
+
+	function renderPlugins(plugins, scene, camera) {
+		if (! plugins.length) return;
+
+		for (var i = 0, il = plugins.length; i < il; i ++) {
+			_currentProgram = null;
+			_currentCamera = null;
+
+			_oldBlending = -1;
+			_oldDepthTest = -1;
+			_oldDepthWrite = -1;
+			_oldDoubleSided = -1;
+			_oldFlipSided = -1;
+			_currentGeometryGroupHash = -1;
+			_currentMaterialId = -1;
+
+			_lightsNeedUpdate = true;
+
+			plugins[i].render(scene, camera, _currentWidth, _currentHeight);
+
+			_currentProgram = null;
+			_currentCamera = null;
+
+			_oldBlending = -1;
+			_oldDepthTest = -1;
+			_oldDepthWrite = -1;
+			_oldDoubleSided = -1;
+			_oldFlipSided = -1;
+			_currentGeometryGroupHash = -1;
+			_currentMaterialId = -1;
+
+			_lightsNeedUpdate = true;
+		}
+	};
+
+	function renderObjects (renderList, reverse, materialType, camera, lights, fog, useBlending, overrideMaterial) {
+		var webglObject, object, buffer, material, start, end, delta;
+
+		if (reverse) {
+			start = renderList.length - 1;
+			end = -1;
+			delta = -1;
+		} else {
+			start = 0;
+			end = renderList.length;
+			delta = 1;
+		}
+
+		for (var i = start; i !== end; i += delta) {
+			webglObject = renderList[i];
+
+			if (webglObject.render) {
+				object = webglObject.object;
+				buffer = webglObject.buffer;
+
+				if (overrideMaterial) {
+					material = overrideMaterial;
 				} else {
-					if (frontFaceDirection === FrontFaceDirectionCW) {
-						_gl.frontFace(_gl.CW);
-					} else {
-						_gl.frontFace(_gl.CCW);
-					}
+					material = webglObject[materialType];
 
-					if (cullFace === CullFaceBack) {
-						_gl.cullFace(_gl.BACK);
-					} else if (cullFace === CullFaceFront) {
-						_gl.cullFace(_gl.FRONT);
-					} else {
-						_gl.cullFace(_gl.FRONT_AND_BACK);
-					}
+					if (! material) continue;
 
-					state.enable(_gl.CULL_FACE);
+					if (useBlending) _this.setBlending(material.blending, material.blendEquation, material.blendSrc, material.blendDst);
+
+					_this.setDepthTest(material.depthTest);
+					_this.setDepthWrite(material.depthWrite);
+					setPolygonOffset(material.polygonOffset, material.polygonOffsetFactor, material.polygonOffsetUnits);
 				}
-			};
 
-			// Textures
+				_this.setObjectFaces(object);
 
-			function setTextureParameters (textureType, texture, isImagePowerOfTwo) {
-				var extension;
-
-				if (isImagePowerOfTwo) {
-					_gl.texParameteri(textureType, _gl.TEXTURE_WRAP_S, paramoGL(texture.wrapS));
-					_gl.texParameteri(textureType, _gl.TEXTURE_WRAP_T, paramoGL(texture.wrapT));
-
-					_gl.texParameteri(textureType, _gl.TEXTURE_MAG_FILTER, paramoGL(texture.magFilter));
-					_gl.texParameteri(textureType, _gl.TEXTURE_MIN_FILTER, paramoGL(texture.minFilter));
+				if (buffer instanceof BufferGeometry) {
+					_this.renderBufferDirect(camera, lights, fog, material, buffer, object);
 				} else {
-					_gl.texParameteri(textureType, _gl.TEXTURE_WRAP_S, _gl.CLAMP_TO_EDGE);
-					_gl.texParameteri(textureType, _gl.TEXTURE_WRAP_T, _gl.CLAMP_TO_EDGE);
+					_this.renderBuffer(camera, lights, fog, material, buffer, object);
+				}
+			}
+		}
+	};
 
-					if (texture.wrapS !== ClampToEdgeWrapping || texture.wrapT !== ClampToEdgeWrapping) {
-						console.warn('WebGLRenderer: Texture is not power of two. Texture.wrapS and Texture.wrapT should be set to ClampToEdgeWrapping.', texture);
-					}
+	function renderObjectsImmediate (renderList, materialType, camera, lights, fog, useBlending, overrideMaterial) {
+		var webglObject, object, material, program;
 
-					_gl.texParameteri(textureType, _gl.TEXTURE_MAG_FILTER, filterFallback(texture.magFilter));
-					_gl.texParameteri(textureType, _gl.TEXTURE_MIN_FILTER, filterFallback(texture.minFilter));
+		for (var i = 0, il = renderList.length; i < il; i ++) {
+			webglObject = renderList[i];
+			object = webglObject.object;
 
-					if (texture.minFilter !== NearestFilter && texture.minFilter !== LinearFilter) {
-						console.warn('WebGLRenderer: Texture is not power of two. Texture.minFilter should be set to NearestFilter or LinearFilter.', texture);
-					}
+			if (object.visible) {
+				if (overrideMaterial) {
+					material = overrideMaterial;
+				} else {
+					material = webglObject[materialType];
+
+					if (! material) continue;
+
+					if (useBlending) _this.setBlending(material.blending, material.blendEquation, material.blendSrc, material.blendDst);
+
+					_this.setDepthTest(material.depthTest);
+					_this.setDepthWrite(material.depthWrite);
+					setPolygonOffset(material.polygonOffset, material.polygonOffsetFactor, material.polygonOffsetUnits);
 				}
 
-				extension = extensions.get('EXT_texture_filter_anisotropic');
+				_this.renderImmediateObject(camera, lights, fog, material, object);
+			}
+		}
+	};
 
-				if (extension) {
-					if (texture.type === FloatType && extensions.get('OES_texture_float_linear') === null) return;
-					if (texture.type === HalfFloatType && extensions.get('OES_texture_half_float_linear') === null) return;
+	this.renderImmediateObject = function (camera, lights, fog, material, object) {
+		var program = setProgram(camera, lights, fog, material, object);
 
-					if (texture.anisotropy > 1 || properties.get(texture).__currentAnisotropy) {
-						_gl.texParameterf(textureType, extension.TEXTURE_MAX_ANISOTROPY_EXT, Math.min(texture.anisotropy, _this.getMaxAnisotropy()));
-						properties.get(texture).__currentAnisotropy = texture.anisotropy;
-					}
+		_currentGeometryGroupHash = -1;
+
+		_this.setObjectFaces(object);
+
+		if (object.immediateRenderCallback) {
+			object.immediateRenderCallback(program, _gl, _frustum);
+		} else {
+			object.render(function(object) { _this.renderBufferImmediate(object, program, material.shading); });
+		}
+	};
+
+	function unrollImmediateBufferMaterial (globject) {
+		var object = globject.object,
+			material = object.material;
+
+		if (material.transparent) {
+			globject.transparent = material;
+			globject.opaque = null;
+		} else {
+			globject.opaque = material;
+			globject.transparent = null;
+		}
+	};
+
+	function unrollBufferMaterial (globject) {
+		var object = globject.object,
+			buffer = globject.buffer,
+			material, materialIndex, meshMaterial;
+
+		meshMaterial = object.material;
+
+		if (meshMaterial instanceof MeshFaceMaterial) {
+			materialIndex = buffer.materialIndex;
+
+			if (materialIndex >= 0) {
+				material = object.geometry.materials[materialIndex];
+
+				if (material.transparent) {
+					globject.transparent = material;
+					globject.opaque = null;
+				} else {
+					globject.opaque = material;
+					globject.transparent = null;
+				}
+			}
+		} else {
+			material = meshMaterial;
+
+			if (material) {
+				if (material.transparent) {
+					globject.transparent = material;
+					globject.opaque = null;
+				} else {
+					globject.opaque = material;
+					globject.transparent = null;
+				}
+			}
+		}
+	};
+
+	function sortFacesByMaterial (geometry) {
+		var f, fl, face, materialIndex, vertices,
+			materialHash, groupHash,
+			hash_map = {};
+
+		var numMorphTargets = geometry.morphTargets.length;
+		var numMorphNormals = geometry.morphNormals.length;
+
+		geometry.geometryGroups = {};
+
+		for (f = 0, fl = geometry.faces.length; f < fl; f ++) {
+			face = geometry.faces[f];
+			materialIndex = face.materialIndex;
+
+			materialHash = (materialIndex !== undefined) ? materialIndex : -1;
+
+			if (hash_map[materialHash] === undefined) {
+				hash_map[materialHash] = { 'hash': materialHash, 'counter': 0 };
+			}
+
+			groupHash = hash_map[materialHash].hash + '_' + hash_map[materialHash].counter;
+
+			if (geometry.geometryGroups[groupHash] === undefined) {
+				geometry.geometryGroups[groupHash] = { 'faces3': [], 'faces4': [], 'materialIndex': materialIndex, 'vertices': 0, 'numMorphTargets': numMorphTargets, 'numMorphNormals': numMorphNormals };
+			}
+
+			vertices = face instanceof Face3 ? 3 : 4;
+
+			if (geometry.geometryGroups[groupHash].vertices + vertices > 65535) {
+				hash_map[materialHash].counter += 1;
+				groupHash = hash_map[materialHash].hash + '_' + hash_map[materialHash].counter;
+
+				if (geometry.geometryGroups[groupHash] === undefined) {
+					geometry.geometryGroups[groupHash] = { 'faces3': [], 'faces4': [], 'materialIndex': materialIndex, 'vertices': 0, 'numMorphTargets': numMorphTargets, 'numMorphNormals': numMorphNormals };
 				}
 			}
 
-			function uploadTexture(textureProperties, texture, slot) {
-				if (textureProperties.__webglInit === undefined) {
-					textureProperties.__webglInit = true;
+			if (face instanceof Face3) {
+				geometry.geometryGroups[groupHash].faces3.push(f);
+			} else {
+				geometry.geometryGroups[groupHash].faces4.push(f);
+			}
 
-					texture.addEventListener('dispose', onTextureDispose);
+			geometry.geometryGroups[groupHash].vertices += vertices;
+		}
 
-					textureProperties.__webglTexture = _gl.createTexture();
+		geometry.geometryGroupsList = [];
 
-					_infoMemory.textures ++;
+		for (var g in geometry.geometryGroups) {
+			geometry.geometryGroups[g].id = _geometryGroupCounter ++;
+
+			geometry.geometryGroupsList.push(geometry.geometryGroups[g]);
+		}
+	};
+
+	this.initWebGLObjects = function (scene) {
+		if (!scene.__webglObjects) {
+			scene.__webglObjects = [];
+			scene.__webglObjectsImmediate = [];
+			scene.__webglSprites = [];
+			scene.__webglFlares = [];
+		}
+
+		while (scene.__objectsAdded.length) {
+			addObject(scene.__objectsAdded[0], scene);
+			scene.__objectsAdded.splice(0, 1);
+		}
+
+		while (scene.__objectsRemoved.length) {
+			removeObject(scene.__objectsRemoved[0], scene);
+			scene.__objectsRemoved.splice(0, 1);
+		}
+
+		for (var o = 0, ol = scene.__webglObjects.length; o < ol; o ++) {
+			updateObject(scene.__webglObjects[o].object);
+		}
+	};
+
+	function addObject (object, scene) {
+		var g, geometry, geometryGroup;
+
+		if (! object.__webglInit) {
+			object.__webglInit = true;
+
+			object._modelViewMatrix = new Matrix4();
+			object._normalMatrix = new Matrix3();
+
+			if (object instanceof Mesh) {
+				geometry = object.geometry;
+
+				if (geometry instanceof Geometry) {
+					if (geometry.geometryGroups === undefined) {
+						sortFacesByMaterial(geometry);
+					}
+
+					for (g in geometry.geometryGroups) {
+						geometryGroup = geometry.geometryGroups[g];
+
+						if (! geometryGroup.__webglVertexBuffer) {
+							createMeshBuffers(geometryGroup);
+							initMeshBuffers(geometryGroup, object);
+
+							geometry.verticesNeedUpdate = true;
+							geometry.morphTargetsNeedUpdate = true;
+							geometry.elementsNeedUpdate = true;
+							geometry.uvsNeedUpdate = true;
+							geometry.normalsNeedUpdate = true;
+							geometry.tangetsNeedUpdate = true;
+							geometry.colorsNeedUpdate = true;
+						}
+					}
+				}
+			} else if (object instanceof Ribbon) {
+				geometry = object.geometry;
+
+				if(! geometry.__webglVertexBuffer) {
+					createRibbonBuffers(geometry);
+					initRibbonBuffers(geometry);
+
+					geometry.verticesNeedUpdate = true;
+					geometry.colorsNeedUpdate = true;
+				}
+			} else if (object instanceof Line) {
+				geometry = object.geometry;
+
+				if(! geometry.__webglVertexBuffer) {
+					createLineBuffers(geometry);
+					initLineBuffers(geometry, object);
+
+					geometry.verticesNeedUpdate = true;
+					geometry.colorsNeedUpdate = true;
+				}
+			} else if (object instanceof ParticleSystem) {
+				geometry = object.geometry;
+
+				if (! geometry.__webglVertexBuffer) {
+					createParticleBuffers(geometry);
+					initParticleBuffers(geometry, object);
+
+					geometry.verticesNeedUpdate = true;
+					geometry.colorsNeedUpdate = true;
+				}
+			}
+		}
+
+		if (! object.__webglActive) {
+			if (object instanceof Mesh) {
+				geometry = object.geometry;
+
+				if (geometry instanceof BufferGeometry) {
+					addBuffer(scene.__webglObjects, geometry, object);
+				} else {
+					for (g in geometry.geometryGroups) {
+						geometryGroup = geometry.geometryGroups[g];
+
+						addBuffer(scene.__webglObjects, geometryGroup, object);
+					}
+				}
+			} else if (object instanceof Ribbon ||
+						object instanceof Line ||
+						object instanceof ParticleSystem) {
+				geometry = object.geometry;
+				addBuffer(scene.__webglObjects, geometry, object);
+			} else if (object instanceof ImmediateRenderObject || object.immediateRenderCallback) {
+				addBufferImmediate(scene.__webglObjectsImmediate, object);
+			} else if (object instanceof Sprite) {
+				scene.__webglSprites.push(object);
+			} else if (object instanceof LensFlare) {
+				scene.__webglFlares.push(object);
+			}
+
+			object.__webglActive = true;
+		}
+	};
+
+	function addBuffer (objlist, buffer, object) {
+		objlist.push(
+			{
+				buffer: buffer,
+				object: object,
+				opaque: null,
+				transparent: null
+			}
+		);
+	};
+
+	function addBufferImmediate (objlist, object) {
+		objlist.push(
+			{
+				object: object,
+				opaque: null,
+				transparent: null
+			}
+		);
+	};
+
+	function updateObject (object) {
+		var geometry = object.geometry,
+			geometryGroup, customAttributesDirty, material;
+
+		if (object instanceof Mesh) {
+			if (geometry instanceof BufferGeometry) {
+
+				geometry.verticesNeedUpdate = false;
+				geometry.elementsNeedUpdate = false;
+				geometry.uvsNeedUpdate = false;
+				geometry.normalsNeedUpdate = false;
+				geometry.colorsNeedUpdate = false;
+			} else {
+				for(var i = 0, il = geometry.geometryGroupsList.length; i < il; i ++) {
+					geometryGroup = geometry.geometryGroupsList[i];
+
+					material = getBufferMaterial(object, geometryGroup);
+
+					customAttributesDirty = material.attributes && areCustomAttributesDirty(material);
+
+					if (geometry.verticesNeedUpdate || geometry.morphTargetsNeedUpdate || geometry.elementsNeedUpdate ||
+						 geometry.uvsNeedUpdate || geometry.normalsNeedUpdate ||
+						 geometry.colorsNeedUpdate || geometry.tangetsNeedUpdate || customAttributesDirty) {
+						setMeshBuffers(geometryGroup, object, _gl.DYNAMIC_DRAW, !geometry.dynamic, material);
+					}
 				}
 
-				state.activeTexture(_gl.TEXTURE0 + slot);
-				state.bindTexture(_gl.TEXTURE_2D, textureProperties.__webglTexture);
+				geometry.verticesNeedUpdate = false;
+				geometry.morphTargetsNeedUpdate = false;
+				geometry.elementsNeedUpdate = false;
+				geometry.uvsNeedUpdate = false;
+				geometry.normalsNeedUpdate = false;
+				geometry.colorsNeedUpdate = false;
+				geometry.tangetsNeedUpdate = false;
 
-				_gl.pixelStorei(_gl.UNPACK_FLIP_Y_WEBGL, texture.flipY);
-				_gl.pixelStorei(_gl.UNPACK_PREMULTIPLY_ALPHA_WEBGL, texture.premultiplyAlpha);
-				_gl.pixelStorei(_gl.UNPACK_ALIGNMENT, texture.unpackAlignment);
+				material.attributes && clearCustomAttributes(material);
+			}
+		} else if (object instanceof Ribbon) {
+			if (geometry.verticesNeedUpdate || geometry.colorsNeedUpdate) {
+				setRibbonBuffers(geometry, _gl.DYNAMIC_DRAW);
+			}
 
-				texture.image = clampToMaxSize(texture.image, capabilities.maxTextureSize);
+			geometry.verticesNeedUpdate = false;
+			geometry.colorsNeedUpdate = false;
+		} else if (object instanceof Line) {
+			material = getBufferMaterial(object, geometryGroup);
 
-				if (textureNeedsPowerOfTwo(texture) && isPowerOfTwo(texture.image) === false) {
-					texture.image = makePowerOfTwo(texture.image);
+			customAttributesDirty = material.attributes && areCustomAttributesDirty(material);
+
+			if (geometry.verticesNeedUpdate ||  geometry.colorsNeedUpdate || customAttributesDirty) {
+				setLineBuffers(geometry, _gl.DYNAMIC_DRAW);
+			}
+
+			geometry.verticesNeedUpdate = false;
+			geometry.colorsNeedUpdate = false;
+
+			material.attributes && clearCustomAttributes(material);
+		} else if (object instanceof ParticleSystem) {
+			material = getBufferMaterial(object, geometryGroup);
+
+			customAttributesDirty = material.attributes && areCustomAttributesDirty(material);
+
+			if (geometry.verticesNeedUpdate || geometry.colorsNeedUpdate || object.sortParticles || customAttributesDirty) {
+				setParticleBuffers(geometry, _gl.DYNAMIC_DRAW, object);
+			}
+
+			geometry.verticesNeedUpdate = false;
+			geometry.colorsNeedUpdate = false;
+
+			material.attributes && clearCustomAttributes(material);
+		}
+	};
+
+	function areCustomAttributesDirty (material) {
+		for (var a in material.attributes) {
+			if (material.attributes[a].needsUpdate) return true;
+		}
+
+		return false;
+	};
+
+	function clearCustomAttributes (material) {
+		for (var a in material.attributes) {
+			material.attributes[a].needsUpdate = false;
+		}
+	};
+
+	function removeObject (object, scene) {
+		if (object instanceof Mesh  ||
+			 object instanceof ParticleSystem ||
+			 object instanceof Ribbon ||
+			 object instanceof Line) {
+			removeInstances(scene.__webglObjects, object);
+		} else if (object instanceof Sprite) {
+			removeInstancesDirect(scene.__webglSprites, object);
+		} else if (object instanceof LensFlare) {
+			removeInstancesDirect(scene.__webglFlares, object);
+		} else if (object instanceof ImmediateRenderObject || object.immediateRenderCallback) {
+			removeInstances(scene.__webglObjectsImmediate, object);
+		}
+
+		object.__webglActive = false;
+	};
+
+	function removeInstances (objlist, object) {
+		for (var o = objlist.length - 1; o >= 0; o --) {
+			if (objlist[o].object === object) {
+				objlist.splice(o, 1);
+			}
+		}
+	};
+
+	function removeInstancesDirect (objlist, object) {
+		for (var o = objlist.length - 1; o >= 0; o --) {
+			if (objlist[o] === object) {
+				objlist.splice(o, 1);
+			}
+		}
+	};
+
+	this.initMaterial = function (material, lights, fog, object) {
+		var u, a, identifiers, i, parameters, maxLightCount, maxBones, maxShadows, shaderID;
+
+		if (material instanceof MeshDepthMaterial) {
+			shaderID = 'depth';
+		} else if (material instanceof MeshNormalMaterial) {
+			shaderID = 'normal';
+		} else if (material instanceof MeshBasicMaterial) {
+			shaderID = 'basic';
+		} else if (material instanceof MeshLambertMaterial) {
+			shaderID = 'lambert';
+		} else if (material instanceof MeshPhongMaterial) {
+			shaderID = 'phong';
+		} else if (material instanceof LineBasicMaterial) {
+			shaderID = 'basic';
+		} else if (material instanceof ParticleBasicMaterial) {
+			shaderID = 'particle_basic';
+		}
+
+		if (shaderID) {
+			setMaterialShaders(material, ShaderLib[shaderID]);
+		}
+
+		maxLightCount = allocateLights(lights);
+
+		maxShadows = allocateShadows(lights);
+
+		maxBones = allocateBones(object);
+
+		parameters = {
+			map: !!material.map,
+			envMap: !!material.envMap,
+			lightMap: !!material.lightMap,
+
+			vertexColors: material.vertexColors,
+
+			fog: fog,
+			useFog: material.fog,
+
+			sizeAttenuation: material.sizeAttenuation,
+
+			skinning: material.skinning,
+			maxBones: maxBones,
+
+			morphTargets: material.morphTargets,
+			morphNormals: material.morphNormals,
+			maxMorphTargets: this.maxMorphTargets,
+			maxMorphNormals: this.maxMorphNormals,
+
+			maxDirLights: maxLightCount.directional,
+			maxPointLights: maxLightCount.point,
+			maxSpotLights: maxLightCount.spot,
+
+			maxShadows: maxShadows,
+			shadowMapEnabled: this.shadowMapEnabled && object.receiveShadow,
+			shadowMapSoft: this.shadowMapSoft,
+			shadowMapDebug: this.shadowMapDebug,
+			shadowMapCascade: this.shadowMapCascade,
+
+			alphaTest: material.alphaTest,
+			metal: material.metal,
+			perPixel: material.perPixel,
+			wrapAround: material.wrapAround,
+			doubleSided: object && object.doubleSided
+		};
+
+		material.program = buildProgram(shaderID, material.fragmentShader, material.vertexShader, material.uniforms, material.attributes, parameters);
+
+		var attributes = material.program.attributes;
+
+		if (attributes.position >= 0) _gl.enableVertexAttribArray(attributes.position);
+		if (attributes.color >= 0) _gl.enableVertexAttribArray(attributes.color);
+		if (attributes.normal >= 0) _gl.enableVertexAttribArray(attributes.normal);
+		if (attributes.tangent >= 0) _gl.enableVertexAttribArray(attributes.tangent);
+
+		if (material.skinning &&
+			 attributes.skinVertexA >=0 && attributes.skinVertexB >= 0 &&
+			 attributes.skinIndex >= 0 && attributes.skinWeight >= 0) {
+			_gl.enableVertexAttribArray(attributes.skinVertexA);
+			_gl.enableVertexAttribArray(attributes.skinVertexB);
+			_gl.enableVertexAttribArray(attributes.skinIndex);
+			_gl.enableVertexAttribArray(attributes.skinWeight);
+		}
+
+		if (material.attributes) {
+			for (a in material.attributes) {
+				if(attributes[a] !== undefined && attributes[a] >= 0) _gl.enableVertexAttribArray(attributes[a]);
+			}
+		}
+
+		if (material.morphTargets) {
+			material.numSupportedMorphTargets = 0;
+
+			var id, base = "morphTarget";
+
+			for (i = 0; i < this.maxMorphTargets; i ++) {
+				id = base + i;
+
+				if (attributes[id] >= 0) {
+					_gl.enableVertexAttribArray(attributes[id]);
+					material.numSupportedMorphTargets ++;
+				}
+			}
+		}
+
+		if (material.morphNormals) {
+			material.numSupportedMorphNormals = 0;
+
+			var id, base = "morphNormal";
+
+			for (i = 0; i < this.maxMorphNormals; i ++) {
+				id = base + i;
+
+				if (attributes[id] >= 0) {
+					_gl.enableVertexAttribArray(attributes[id]);
+					material.numSupportedMorphNormals ++;
+				}
+			}
+		}
+
+		material.uniformsList = [];
+
+		for (u in material.uniforms) {
+			material.uniformsList.push([material.uniforms[u], u]);
+		}
+	};
+
+	function setMaterialShaders(material, shaders) {
+		material.uniforms = UniformsUtils.clone(shaders.uniforms);
+		material.vertexShader = shaders.vertexShader;
+		material.fragmentShader = shaders.fragmentShader;
+	};
+
+	function setProgram(camera, lights, fog, material, object) {
+		if (! material.program || material.needsUpdate) {
+			_this.initMaterial(material, lights, fog, object);
+			material.needsUpdate = false;
+		}
+
+		if (material.morphTargets) {
+			if (! object.__webglMorphTargetInfluences) {
+				object.__webglMorphTargetInfluences = new Float32Array(_this.maxMorphTargets);
+
+				for (var i = 0, il = _this.maxMorphTargets; i < il; i ++) {
+					object.__webglMorphTargetInfluences[i] = 0;
+				}
+			}
+		}
+
+		var refreshMaterial = false;
+
+		var program = material.program,
+			p_uniforms = program.uniforms,
+			m_uniforms = material.uniforms;
+
+		if (program !== _currentProgram) {
+			_gl.useProgram(program);
+			_currentProgram = program;
+
+			refreshMaterial = true;
+		}
+
+		if (material.id !== _currentMaterialId) {
+			_currentMaterialId = material.id;
+			refreshMaterial = true;
+		}
+
+		if (refreshMaterial || camera !== _currentCamera) {
+			_gl.uniformMatrix4fv(p_uniforms.projectionMatrix, false, camera._projectionMatrixArray);
+
+			if (camera !== _currentCamera) _currentCamera = camera;
+		}
+
+		if (refreshMaterial) {
+			if (fog && material.fog) {
+				refreshUniformsFog(m_uniforms, fog);
+			}
+
+			if (material instanceof MeshPhongMaterial ||
+				 material instanceof MeshLambertMaterial ||
+				 material.lights) {
+				if (_lightsNeedUpdate) {
+					setupLights(program, lights);
+					_lightsNeedUpdate = false;
 				}
 
-				var image = texture.image,
-				isImagePowerOfTwo = isPowerOfTwo(image),
+				refreshUniformsLights(m_uniforms, _lights);
+			}
+
+			if (material instanceof MeshBasicMaterial ||
+				 material instanceof MeshLambertMaterial ||
+				 material instanceof MeshPhongMaterial) {
+				refreshUniformsCommon(m_uniforms, material);
+			}
+
+			if (material instanceof LineBasicMaterial) {
+				refreshUniformsLine(m_uniforms, material);
+			} else if (material instanceof ParticleBasicMaterial) {
+				refreshUniformsParticle(m_uniforms, material);
+			} else if (material instanceof MeshPhongMaterial) {
+				refreshUniformsPhong(m_uniforms, material);
+			} else if (material instanceof MeshLambertMaterial) {
+				refreshUniformsLambert(m_uniforms, material);
+			} else if (material instanceof MeshDepthMaterial) {
+				m_uniforms.mNear.value = camera.near;
+				m_uniforms.mFar.value = camera.far;
+				m_uniforms.opacity.value = material.opacity;
+			} else if (material instanceof MeshNormalMaterial) {
+				m_uniforms.opacity.value = material.opacity;
+			}
+
+			if (object.receiveShadow && ! material._shadowPass) {
+				refreshUniformsShadow(m_uniforms, lights);
+			}
+
+			loadUniformsGeneric(program, material.uniformsList);
+
+			if (material instanceof ShaderMaterial ||
+				 material instanceof MeshPhongMaterial ||
+				 material.envMap) {
+				if (p_uniforms.cameraPosition !== null) {
+					var position = camera.matrixWorld.getPosition();
+					_gl.uniform3f(p_uniforms.cameraPosition, position.x, position.y, position.z);
+				}
+			}
+
+			if (material instanceof MeshPhongMaterial ||
+				 material instanceof MeshLambertMaterial ||
+				 material instanceof ShaderMaterial ||
+				 material.skinning) {
+				if (p_uniforms.viewMatrix !== null) {
+					_gl.uniformMatrix4fv(p_uniforms.viewMatrix, false, camera._viewMatrixArray);
+				}
+			}
+
+			if (material.skinning) {
+				_gl.uniformMatrix4fv(p_uniforms.boneGlobalMatrices, false, object.boneMatrices);
+			}
+		}
+
+		loadUniformsMatrices(p_uniforms, object);
+
+		if (p_uniforms.objectMatrix !== null) {
+			_gl.uniformMatrix4fv(p_uniforms.objectMatrix, false, object.matrixWorld.elements);
+		}
+
+		return program;
+	};
+
+	function refreshUniformsCommon (uniforms, material) {
+		uniforms.opacity.value = material.opacity;
+
+		if (_this.gammaInput) {
+			uniforms.diffuse.value.copyGammaToLinear(material.color);
+		} else {
+			uniforms.diffuse.value = material.color;
+		}
+
+		uniforms.map.texture = material.map;
+
+		if (material.map) {
+			uniforms.offsetRepeat.value.set(material.map.offset.x, material.map.offset.y, material.map.repeat.x, material.map.repeat.y);
+		}
+
+		uniforms.lightMap.texture = material.lightMap;
+
+		uniforms.envMap.texture = material.envMap;
+		uniforms.flipEnvMap.value = (material.envMap instanceof WebGLRenderTargetCube) ? 1 : -1;
+
+		if (_this.gammaInput) {
+			uniforms.reflectivity.value = material.reflectivity;
+		} else {
+			uniforms.reflectivity.value = material.reflectivity;
+		}
+
+		uniforms.refractionRatio.value = material.refractionRatio;
+		uniforms.combine.value = material.combine;
+		uniforms.useRefract.value = material.envMap && material.envMap.mapping instanceof CubeRefractionMapping;
+	};
+
+	function refreshUniformsLine (uniforms, material) {
+		uniforms.diffuse.value = material.color;
+		uniforms.opacity.value = material.opacity;
+	};
+
+	function refreshUniformsParticle (uniforms, material) {
+		uniforms.psColor.value = material.color;
+		uniforms.opacity.value = material.opacity;
+		uniforms.size.value = material.size;
+		uniforms.scale.value = _canvas.height / 2.0;
+
+		uniforms.map.texture = material.map;
+	};
+
+	function refreshUniformsFog (uniforms, fog) {
+		uniforms.fogColor.value = fog.color;
+
+		if (fog instanceof Fog) {
+			uniforms.fogNear.value = fog.near;
+			uniforms.fogFar.value = fog.far;
+		} else if (fog instanceof FogExp2) {
+			uniforms.fogDensity.value = fog.density;
+		}
+	};
+
+	function refreshUniformsPhong (uniforms, material) {
+		uniforms.shininess.value = material.shininess;
+
+		if (_this.gammaInput) {
+			uniforms.ambient.value.copyGammaToLinear(material.ambient);
+			uniforms.emissive.value.copyGammaToLinear(material.emissive);
+			uniforms.specular.value.copyGammaToLinear(material.specular);
+		} else {
+			uniforms.ambient.value = material.ambient;
+			uniforms.emissive.value = material.emissive;
+			uniforms.specular.value = material.specular;
+		}
+
+		if (material.wrapAround) {
+			uniforms.wrapRGB.value.copy(material.wrapRGB);
+		}
+	};
+
+	function refreshUniformsLambert (uniforms, material) {
+		if (_this.gammaInput) {
+			uniforms.ambient.value.copyGammaToLinear(material.ambient);
+			uniforms.emissive.value.copyGammaToLinear(material.emissive);
+		} else {
+			uniforms.ambient.value = material.ambient;
+			uniforms.emissive.value = material.emissive;
+		}
+
+		if (material.wrapAround) {
+			uniforms.wrapRGB.value.copy(material.wrapRGB);
+		}
+	};
+
+	function refreshUniformsLights (uniforms, lights) {
+		uniforms.ambientLightColor.value = lights.ambient;
+
+		uniforms.directionalLightColor.value = lights.directional.colors;
+		uniforms.directionalLightDirection.value = lights.directional.positions;
+
+		uniforms.pointLightColor.value = lights.point.colors;
+		uniforms.pointLightPosition.value = lights.point.positions;
+		uniforms.pointLightDistance.value = lights.point.distances;
+
+		uniforms.spotLightColor.value = lights.spot.colors;
+		uniforms.spotLightPosition.value = lights.spot.positions;
+		uniforms.spotLightDistance.value = lights.spot.distances;
+		uniforms.spotLightDirection.value = lights.spot.directions;
+		uniforms.spotLightAngle.value = lights.spot.angles;
+		uniforms.spotLightExponent.value = lights.spot.exponents;
+	};
+
+	function refreshUniformsShadow (uniforms, lights) {
+		if (uniforms.shadowMatrix) {
+			var j = 0;
+
+			for (var i = 0, il = lights.length; i < il; i ++) {
+				var light = lights[i];
+
+				if (! light.castShadow) continue;
+
+				if (light instanceof SpotLight || (light instanceof DirectionalLight && ! light.shadowCascade)) {
+					uniforms.shadowMap.texture[j] = light.shadowMap;
+					uniforms.shadowMapSize.value[j] = light.shadowMapSize;
+
+					uniforms.shadowMatrix.value[j] = light.shadowMatrix;
+
+					uniforms.shadowDarkness.value[j] = light.shadowDarkness;
+					uniforms.shadowBias.value[j] = light.shadowBias;
+
+					j ++;
+				}
+			}
+		}
+	};
+
+	function loadUniformsMatrices (uniforms, object) {
+		_gl.uniformMatrix4fv(uniforms.modelViewMatrix, false, object._modelViewMatrix.elements);
+
+		if (uniforms.normalMatrix) {
+			_gl.uniformMatrix3fv(uniforms.normalMatrix, false, object._normalMatrix.elements);
+		}
+	};
+
+	function loadUniformsGeneric (program, uniforms) {
+		var uniform, value, type, location, texture, i, il, j, jl, offset;
+
+		for (j = 0, jl = uniforms.length; j < jl; j ++) {
+			location = program.uniforms[uniforms[j][1]];
+			if (!location) continue;
+
+			uniform = uniforms[j][0];
+
+			type = uniform.type;
+			value = uniform.value;
+
+			switch (type) {
+				case "i":
+
+					_gl.uniform1i(location, value);
+
+					break;
+
+				case "f":
+
+					_gl.uniform1f(location, value);
+
+					break;
+
+				case "v2":
+
+					_gl.uniform2f(location, value.x, value.y);
+
+					break;
+
+				case "v3":
+
+					_gl.uniform3f(location, value.x, value.y, value.z);
+
+					break;
+
+				case "v4":
+
+					_gl.uniform4f(location, value.x, value.y, value.z, value.w);
+
+					break;
+
+				case "c":
+
+					_gl.uniform3f(location, value.r, value.g, value.b);
+
+					break;
+
+				case "fv1":
+
+					_gl.uniform1fv(location, value);
+
+					break;
+
+				case "fv":
+
+					_gl.uniform3fv(location, value);
+
+					break;
+
+				case "v2v":
+
+					if (! uniform._array) {
+						uniform._array = new Float32Array(2 * value.length);
+					}
+
+					for (i = 0, il = value.length; i < il; i ++) {
+						offset = i * 2;
+
+						uniform._array[offset] 	 = value[i].x;
+						uniform._array[offset + 1] = value[i].y;
+					}
+
+					_gl.uniform2fv(location, uniform._array);
+
+					break;
+
+				case "v3v":
+
+					if (! uniform._array) {
+						uniform._array = new Float32Array(3 * value.length);
+					}
+
+					for (i = 0, il = value.length; i < il; i ++) {
+						offset = i * 3;
+
+						uniform._array[offset] 	 = value[i].x;
+						uniform._array[offset + 1] = value[i].y;
+						uniform._array[offset + 2] = value[i].z;
+					}
+
+					_gl.uniform3fv(location, uniform._array);
+
+					break;
+
+				case "v4v":
+
+					if (! uniform._array) {
+						uniform._array = new Float32Array(4 * value.length);
+					}
+
+					for (i = 0, il = value.length; i < il; i ++) {
+						offset = i * 4;
+
+						uniform._array[offset] 	 = value[i].x;
+						uniform._array[offset + 1] = value[i].y;
+						uniform._array[offset + 2] = value[i].z;
+						uniform._array[offset + 3] = value[i].w;
+					}
+
+					_gl.uniform4fv(location, uniform._array);
+
+					break;
+
+				case "m4":
+
+					if (! uniform._array) {
+						uniform._array = new Float32Array(16);
+					}
+
+					value.flattenToArray(uniform._array);
+					_gl.uniformMatrix4fv(location, false, uniform._array);
+
+					break;
+
+				case "m4v":
+
+					if (! uniform._array) {
+						uniform._array = new Float32Array(16 * value.length);
+					}
+
+					for (i = 0, il = value.length; i < il; i ++) {
+						value[i].flattenToArrayOffset(uniform._array, i * 16);
+					}
+
+					_gl.uniformMatrix4fv(location, false, uniform._array);
+
+					break;
+
+				case "t":
+
+					_gl.uniform1i(location, value);
+
+					texture = uniform.texture;
+
+					if (!texture) continue;
+
+					if (texture.image instanceof Array && texture.image.length === 6) {
+						setCubeTexture(texture, value);
+					} else if (texture instanceof WebGLRenderTargetCube) {
+						setCubeTextureDynamic(texture, value);
+					} else {
+						_this.setTexture(texture, value);
+					}
+
+					break;
+
+				case "tv":
+
+					if (! uniform._array) {
+						uniform._array = [];
+
+						for(i = 0, il = uniform.texture.length; i < il; i ++) {
+							uniform._array[i] = value + i;
+						}
+					}
+
+					_gl.uniform1iv(location, uniform._array);
+
+					for(i = 0, il = uniform.texture.length; i < il; i ++) {
+						texture = uniform.texture[i];
+
+						if (!texture) continue;
+
+						_this.setTexture(texture, uniform._array[i]);
+					}
+
+					break;
+			}
+		}
+	};
+
+	function setupMatrices (object, camera) {
+		object._modelViewMatrix.multiply(camera.matrixWorldInverse, object.matrixWorld);
+
+		object._normalMatrix.getInverse(object._modelViewMatrix);
+		object._normalMatrix.transpose();
+	};
+
+	function setupLights (program, lights) {
+		var l, ll, light, n,
+		r = 0, g = 0, b = 0,
+		color, position, intensity, distance,
+
+		zlights = _lights,
+
+		dcolors = zlights.directional.colors,
+		dpositions = zlights.directional.positions,
+
+		pcolors = zlights.point.colors,
+		ppositions = zlights.point.positions,
+		pdistances = zlights.point.distances,
+
+		scolors = zlights.spot.colors,
+		spositions = zlights.spot.positions,
+		sdistances = zlights.spot.distances,
+		sdirections = zlights.spot.directions,
+		sangles = zlights.spot.angles,
+		sexponents = zlights.spot.exponents,
+
+		dlength = 0,
+		plength = 0,
+		slength = 0,
+
+		doffset = 0,
+		poffset = 0,
+		soffset = 0;
+
+		for (l = 0, ll = lights.length; l < ll; l ++) {
+			light = lights[l];
+
+			if (light.onlyShadow) continue;
+
+			color = light.color;
+			intensity = light.intensity;
+			distance = light.distance;
+
+			if (light instanceof AmbientLight) {
+				if (_this.gammaInput) {
+					r += color.r * color.r;
+					g += color.g * color.g;
+					b += color.b * color.b;
+				} else {
+					r += color.r;
+					g += color.g;
+					b += color.b;
+				}
+			} else if (light instanceof DirectionalLight) {
+				doffset = dlength * 3;
+
+				if (_this.gammaInput) {
+					dcolors[doffset]     = color.r * color.r * intensity * intensity;
+					dcolors[doffset + 1] = color.g * color.g * intensity * intensity;
+					dcolors[doffset + 2] = color.b * color.b * intensity * intensity;
+				} else {
+					dcolors[doffset]     = color.r * intensity;
+					dcolors[doffset + 1] = color.g * intensity;
+					dcolors[doffset + 2] = color.b * intensity;
+				}
+
+				_direction.copy(light.matrixWorld.getPosition());
+				_direction.subSelf(light.target.matrixWorld.getPosition());
+				_direction.normalize();
+
+				dpositions[doffset]     = _direction.x;
+				dpositions[doffset + 1] = _direction.y;
+				dpositions[doffset + 2] = _direction.z;
+
+				dlength += 1;
+			} else if(light instanceof PointLight) {
+				poffset = plength * 3;
+
+				if (_this.gammaInput) {
+					pcolors[poffset]     = color.r * color.r * intensity * intensity;
+					pcolors[poffset + 1] = color.g * color.g * intensity * intensity;
+					pcolors[poffset + 2] = color.b * color.b * intensity * intensity;
+				} else {
+					pcolors[poffset]     = color.r * intensity;
+					pcolors[poffset + 1] = color.g * intensity;
+					pcolors[poffset + 2] = color.b * intensity;
+				}
+
+				position = light.matrixWorld.getPosition();
+
+				ppositions[poffset]     = position.x;
+				ppositions[poffset + 1] = position.y;
+				ppositions[poffset + 2] = position.z;
+
+				pdistances[plength] = distance;
+
+				plength += 1;
+			} else if(light instanceof SpotLight) {
+				soffset = slength * 3;
+
+				if (_this.gammaInput) {
+					scolors[soffset]     = color.r * color.r * intensity * intensity;
+					scolors[soffset + 1] = color.g * color.g * intensity * intensity;
+					scolors[soffset + 2] = color.b * color.b * intensity * intensity;
+				} else {
+					scolors[soffset]     = color.r * intensity;
+					scolors[soffset + 1] = color.g * intensity;
+					scolors[soffset + 2] = color.b * intensity;
+				}
+
+				position = light.matrixWorld.getPosition();
+
+				spositions[soffset]     = position.x;
+				spositions[soffset + 1] = position.y;
+				spositions[soffset + 2] = position.z;
+
+				sdistances[slength] = distance;
+
+				_direction.copy(position);
+				_direction.subSelf(light.target.matrixWorld.getPosition());
+				_direction.normalize();
+
+				sdirections[soffset]     = _direction.x;
+				sdirections[soffset + 1] = _direction.y;
+				sdirections[soffset + 2] = _direction.z;
+
+				sangles[slength] = Math.cos(light.angle);
+				sexponents[slength] = light.exponent;
+
+				slength += 1;
+			}
+		}
+
+		for (l = dlength * 3, ll = dcolors.length; l < ll; l ++) dcolors[l] = 0.0;
+		for (l = plength * 3, ll = pcolors.length; l < ll; l ++) pcolors[l] = 0.0;
+		for (l = slength * 3, ll = scolors.length; l < ll; l ++) scolors[l] = 0.0;
+
+		zlights.directional.length = dlength;
+		zlights.point.length = plength;
+		zlights.spot.length = slength;
+
+		zlights.ambient[0] = r;
+		zlights.ambient[1] = g;
+		zlights.ambient[2] = b;
+	};
+
+	this.setFaceCulling = function (cullFace, frontFace) {
+		if (cullFace) {
+			if (!frontFace || frontFace === "ccw") {
+				_gl.frontFace(_gl.CCW);
+			} else {
+				_gl.frontFace(_gl.CW);
+			}
+
+			if(cullFace === "back") {
+				_gl.cullFace(_gl.BACK);
+			} else if(cullFace === "front") {
+				_gl.cullFace(_gl.FRONT);
+			} else {
+				_gl.cullFace(_gl.FRONT_AND_BACK);
+			}
+
+			_gl.enable(_gl.CULL_FACE);
+		} else {
+			_gl.disable(_gl.CULL_FACE);
+		}
+	};
+
+	this.setObjectFaces = function (object) {
+		if (_oldDoubleSided !== object.doubleSided) {
+			if (object.doubleSided) {
+				_gl.disable(_gl.CULL_FACE);
+			} else {
+				_gl.enable(_gl.CULL_FACE);
+			}
+
+			_oldDoubleSided = object.doubleSided;
+		}
+
+		if (_oldFlipSided !== object.flipSided) {
+			if (object.flipSided) {
+				_gl.frontFace(_gl.CW);
+			} else {
+				_gl.frontFace(_gl.CCW);
+			}
+
+			_oldFlipSided = object.flipSided;
+		}
+	};
+
+	this.setDepthTest = function (depthTest) {
+		if (_oldDepthTest !== depthTest) {
+			if (depthTest) {
+				_gl.enable(_gl.DEPTH_TEST);
+			} else {
+				_gl.disable(_gl.DEPTH_TEST);
+			}
+
+			_oldDepthTest = depthTest;
+		}
+	};
+
+	this.setDepthWrite = function (depthWrite) {
+		if (_oldDepthWrite !== depthWrite) {
+			_gl.depthMask(depthWrite);
+			_oldDepthWrite = depthWrite;
+		}
+	};
+
+	function setLineWidth (width) {
+		if (width !== _oldLineWidth) {
+			_gl.lineWidth(width);
+
+			_oldLineWidth = width;
+		}
+	};
+
+	function setPolygonOffset (polygonoffset, factor, units) {
+		if (_oldPolygonOffset !== polygonoffset) {
+			if (polygonoffset) {
+				_gl.enable(_gl.POLYGON_OFFSET_FILL);
+			} else {
+				_gl.disable(_gl.POLYGON_OFFSET_FILL);
+			}
+
+			_oldPolygonOffset = polygonoffset;
+		}
+
+		if (polygonoffset && (_oldPolygonOffsetFactor !== factor || _oldPolygonOffsetUnits !== units)) {
+			_gl.polygonOffset(factor, units);
+
+			_oldPolygonOffsetFactor = factor;
+			_oldPolygonOffsetUnits = units;
+		}
+	};
+
+	this.setBlending = function (blending, blendEquation, blendSrc, blendDst) {
+		if (blending !== _oldBlending) {
+			switch (blending) {
+				case NoBlending:
+
+					_gl.disable(_gl.BLEND);
+
+					break;
+
+				case AdditiveBlending:
+
+					_gl.enable(_gl.BLEND);
+					_gl.blendEquation(_gl.FUNC_ADD);
+					_gl.blendFunc(_gl.SRC_ALPHA, _gl.ONE);
+
+					break;
+
+				case SubtractiveBlending:
+					_gl.enable(_gl.BLEND);
+					_gl.blendEquation(_gl.FUNC_ADD);
+					_gl.blendFunc(_gl.ZERO, _gl.ONE_MINUS_SRC_COLOR);
+
+					break;
+
+				case MultiplyBlending:
+					_gl.enable(_gl.BLEND);
+					_gl.blendEquation(_gl.FUNC_ADD);
+					_gl.blendFunc(_gl.ZERO, _gl.SRC_COLOR);
+
+					break;
+
+				case CustomBlending:
+
+					_gl.enable(_gl.BLEND);
+
+					break;
+
+				default:
+
+					_gl.enable(_gl.BLEND);
+					_gl.blendEquationSeparate(_gl.FUNC_ADD, _gl.FUNC_ADD);
+					_gl.blendFuncSeparate(_gl.SRC_ALPHA, _gl.ONE_MINUS_SRC_ALPHA, _gl.ONE, _gl.ONE_MINUS_SRC_ALPHA);
+
+					break;
+			}
+
+			_oldBlending = blending;
+		}
+
+		if (blending === CustomBlending) {
+			if (blendEquation !== _oldBlendEquation) {
+				_gl.blendEquation(paramoGL(blendEquation));
+
+				_oldBlendEquation = blendEquation;
+			}
+
+			if (blendSrc !== _oldBlendSrc || blendDst !== _oldBlendDst) {
+				_gl.blendFunc(paramoGL(blendSrc), paramoGL(blendDst));
+
+				_oldBlendSrc = blendSrc;
+				_oldBlendDst = blendDst;
+			}
+		} else {
+			_oldBlendEquation = null;
+			_oldBlendSrc = null;
+			_oldBlendDst = null;
+		}
+	};
+
+	function buildProgram (shaderID, fragmentShader, vertexShader, uniforms, attributes, parameters) {
+		var p, pl, program, code;
+		var chunks = [];
+
+		if (shaderID) {
+			chunks.push(shaderID);
+		} else {
+			chunks.push(fragmentShader);
+			chunks.push(vertexShader);
+		}
+
+		for (p in parameters) {
+			chunks.push(p);
+			chunks.push(parameters[p]);
+		}
+
+		code = chunks.join();
+
+		for (p = 0, pl = _programs.length; p < pl; p ++) {
+			if (_programs[p].code === code) {
+				return _programs[p].program;
+			}
+		}
+
+		program = _gl.createProgram();
+
+		var prefix_vertex = [
+
+			"precision " + _precision + " float;",
+
+			(_maxVertexTextures > 0) ? "#define VERTEX_TEXTURES" : "",
+
+			_this.gammaInput ? "#define GAMMA_INPUT" : "",
+			_this.gammaOutput ? "#define GAMMA_OUTPUT" : "",
+			_this.physicallyBasedShading ? "#define PHYSICALLY_BASED_SHADING" : "",
+
+			"#define MAX_DIR_LIGHTS " + parameters.maxDirLights,
+			"#define MAX_POINT_LIGHTS " + parameters.maxPointLights,
+			"#define MAX_SPOT_LIGHTS " + parameters.maxSpotLights,
+
+			"#define MAX_SHADOWS " + parameters.maxShadows,
+
+			"#define MAX_BONES " + parameters.maxBones,
+
+			parameters.map ? "#define USE_MAP" : "",
+			parameters.envMap ? "#define USE_ENVMAP" : "",
+			parameters.lightMap ? "#define USE_LIGHTMAP" : "",
+			parameters.vertexColors ? "#define USE_COLOR" : "",
+			parameters.skinning ? "#define USE_SKINNING" : "",
+			parameters.morphTargets ? "#define USE_MORPHTARGETS" : "",
+			parameters.morphNormals ? "#define USE_MORPHNORMALS" : "",
+			parameters.perPixel ? "#define PHONG_PER_PIXEL" : "",
+			parameters.wrapAround ? "#define WRAP_AROUND" : "",
+			parameters.doubleSided ? "#define DOUBLE_SIDED" : "",
+
+			parameters.shadowMapEnabled ? "#define USE_SHADOWMAP" : "",
+			parameters.shadowMapSoft ? "#define SHADOWMAP_SOFT" : "",
+			parameters.shadowMapDebug ? "#define SHADOWMAP_DEBUG" : "",
+			parameters.shadowMapCascade ? "#define SHADOWMAP_CASCADE" : "",
+
+			parameters.sizeAttenuation ? "#define USE_SIZEATTENUATION" : "",
+
+			"uniform mat4 objectMatrix;",
+			"uniform mat4 modelViewMatrix;",
+			"uniform mat4 projectionMatrix;",
+			"uniform mat4 viewMatrix;",
+			"uniform mat3 normalMatrix;",
+			"uniform vec3 cameraPosition;",
+
+			"attribute vec3 position;",
+			"attribute vec3 normal;",
+			"attribute vec2 uv;",
+			"attribute vec2 uv2;",
+
+			"#ifdef USE_COLOR",
+
+				"attribute vec3 color;",
+
+			"#endif",
+
+			"#ifdef USE_MORPHTARGETS",
+
+				"attribute vec3 morphTarget0;",
+				"attribute vec3 morphTarget1;",
+				"attribute vec3 morphTarget2;",
+				"attribute vec3 morphTarget3;",
+
+				"#ifdef USE_MORPHNORMALS",
+
+					"attribute vec3 morphNormal0;",
+					"attribute vec3 morphNormal1;",
+					"attribute vec3 morphNormal2;",
+					"attribute vec3 morphNormal3;",
+
+				"#else",
+
+					"attribute vec3 morphTarget4;",
+					"attribute vec3 morphTarget5;",
+					"attribute vec3 morphTarget6;",
+					"attribute vec3 morphTarget7;",
+
+				"#endif",
+
+			"#endif",
+
+			"#ifdef USE_SKINNING",
+
+				"attribute vec4 skinVertexA;",
+				"attribute vec4 skinVertexB;",
+				"attribute vec4 skinIndex;",
+				"attribute vec4 skinWeight;",
+
+			"#endif",
+
+			""
+
+		].join("\n");
+
+		var prefix_fragment = [
+
+			"precision " + _precision + " float;",
+
+			"#define MAX_DIR_LIGHTS " + parameters.maxDirLights,
+			"#define MAX_POINT_LIGHTS " + parameters.maxPointLights,
+			"#define MAX_SPOT_LIGHTS " + parameters.maxSpotLights,
+
+			"#define MAX_SHADOWS " + parameters.maxShadows,
+
+			parameters.alphaTest ? "#define ALPHATEST " + parameters.alphaTest: "",
+
+			_this.gammaInput ? "#define GAMMA_INPUT" : "",
+			_this.gammaOutput ? "#define GAMMA_OUTPUT" : "",
+			_this.physicallyBasedShading ? "#define PHYSICALLY_BASED_SHADING" : "",
+
+			(parameters.useFog && parameters.fog) ? "#define USE_FOG" : "",
+			(parameters.useFog && parameters.fog instanceof FogExp2) ? "#define FOG_EXP2" : "",
+
+			parameters.map ? "#define USE_MAP" : "",
+			parameters.envMap ? "#define USE_ENVMAP" : "",
+			parameters.lightMap ? "#define USE_LIGHTMAP" : "",
+			parameters.vertexColors ? "#define USE_COLOR" : "",
+
+			parameters.metal ? "#define METAL" : "",
+			parameters.perPixel ? "#define PHONG_PER_PIXEL" : "",
+			parameters.wrapAround ? "#define WRAP_AROUND" : "",
+			parameters.doubleSided ? "#define DOUBLE_SIDED" : "",
+
+			parameters.shadowMapEnabled ? "#define USE_SHADOWMAP" : "",
+			parameters.shadowMapSoft ? "#define SHADOWMAP_SOFT" : "",
+			parameters.shadowMapDebug ? "#define SHADOWMAP_DEBUG" : "",
+			parameters.shadowMapCascade ? "#define SHADOWMAP_CASCADE" : "",
+
+			"uniform mat4 viewMatrix;",
+			"uniform vec3 cameraPosition;",
+			""
+
+		].join("\n");
+
+		_gl.attachShader(program, getShader("fragment", prefix_fragment + fragmentShader));
+		_gl.attachShader(program, getShader("vertex", prefix_vertex + vertexShader));
+
+		_gl.linkProgram(program);
+
+		if (!_gl.getProgramParameter(program, _gl.LINK_STATUS)) {
+			console.error("Could not initialise shader\n" + "VALIDATE_STATUS: " + _gl.getProgramParameter(program, _gl.VALIDATE_STATUS) + ", gl error [" + _gl.getError() + "]");
+		}
+
+		program.uniforms = {};
+		program.attributes = {};
+
+		var identifiers, u, a, i;
+
+		identifiers = [
+
+			'viewMatrix', 'modelViewMatrix', 'projectionMatrix', 'normalMatrix', 'objectMatrix', 'cameraPosition',
+			'boneGlobalMatrices', 'morphTargetInfluences'
+
+		];
+
+		for (u in uniforms) {
+			identifiers.push(u);
+		}
+
+		cacheUniformLocations(program, identifiers);
+
+		identifiers = [
+
+			"position", "normal", "uv", "uv2", "tangent", "color",
+			"skinVertexA", "skinVertexB", "skinIndex", "skinWeight"
+
+		];
+
+		for (i = 0; i < parameters.maxMorphTargets; i ++) {
+			identifiers.push("morphTarget" + i);
+		}
+
+		for (i = 0; i < parameters.maxMorphNormals; i ++) {
+			identifiers.push("morphNormal" + i);
+		}
+
+		for (a in attributes) {
+			identifiers.push(a);
+		}
+
+		cacheAttributeLocations(program, identifiers);
+
+		program.id = _programs.length;
+
+		_programs.push({ program: program, code: code });
+
+		_this.info.memory.programs = _programs.length;
+
+		return program;
+	};
+
+	function cacheUniformLocations (program, identifiers) {
+		var i, l, id;
+
+		for(i = 0, l = identifiers.length; i < l; i ++) {
+			id = identifiers[i];
+			program.uniforms[id] = _gl.getUniformLocation(program, id);
+		}
+	};
+
+	function cacheAttributeLocations (program, identifiers) {
+		var i, l, id;
+
+		for(i = 0, l = identifiers.length; i < l; i ++) {
+			id = identifiers[i];
+			program.attributes[id] = _gl.getAttribLocation(program, id);
+		}
+	};
+
+	function getShader (type, string) {
+		var shader;
+
+		if (type === "fragment") {
+			shader = _gl.createShader(_gl.FRAGMENT_SHADER);
+		} else if (type === "vertex") {
+			shader = _gl.createShader(_gl.VERTEX_SHADER);
+		}
+
+		_gl.shaderSource(shader, string);
+		_gl.compileShader(shader);
+
+		if (!_gl.getShaderParameter(shader, _gl.COMPILE_STATUS)) {
+			console.error(_gl.getShaderInfoLog(shader));
+			console.error(string);
+			return null;
+		}
+
+		return shader;
+	};
+
+	function isPowerOfTwo (value) {
+		return (value & (value - 1)) === 0;
+	};
+
+	function setTextureParameters (textureType, texture, isImagePowerOfTwo) {
+		if (isImagePowerOfTwo) {
+			_gl.texParameteri(textureType, _gl.TEXTURE_WRAP_S, paramoGL(texture.wrapS));
+			_gl.texParameteri(textureType, _gl.TEXTURE_WRAP_T, paramoGL(texture.wrapT));
+
+			_gl.texParameteri(textureType, _gl.TEXTURE_MAG_FILTER, paramoGL(texture.magFilter));
+			_gl.texParameteri(textureType, _gl.TEXTURE_MIN_FILTER, paramoGL(texture.minFilter));
+		} else {
+			_gl.texParameteri(textureType, _gl.TEXTURE_WRAP_S, _gl.CLAMP_TO_EDGE);
+			_gl.texParameteri(textureType, _gl.TEXTURE_WRAP_T, _gl.CLAMP_TO_EDGE);
+
+			_gl.texParameteri(textureType, _gl.TEXTURE_MAG_FILTER, filterFallback(texture.magFilter));
+			_gl.texParameteri(textureType, _gl.TEXTURE_MIN_FILTER, filterFallback(texture.minFilter));
+		}
+	};
+
+	this.setTexture = function (texture, slot) {
+		if (texture.needsUpdate) {
+			if (! texture.__webglInit) {
+				texture.__webglInit = true;
+				texture.__webglTexture = _gl.createTexture();
+
+				_this.info.memory.textures ++;
+			}
+
+			_gl.activeTexture(_gl.TEXTURE0 + slot);
+			_gl.bindTexture(_gl.TEXTURE_2D, texture.__webglTexture);
+
+			_gl.pixelStorei(_gl.UNPACK_PREMULTIPLY_ALPHA_WEBGL, texture.premultiplyAlpha);
+
+			var image = texture.image,
+			isImagePowerOfTwo = isPowerOfTwo(image.width) && isPowerOfTwo(image.height),
+			glFormat = paramoGL(texture.format),
+			glType = paramoGL(texture.type);
+
+			setTextureParameters(_gl.TEXTURE_2D, texture, isImagePowerOfTwo);
+
+			if (texture instanceof DataTexture) {
+				_gl.texImage2D(_gl.TEXTURE_2D, 0, glFormat, image.width, image.height, 0, glFormat, glType, image.data);
+			} else {
+				_gl.texImage2D(_gl.TEXTURE_2D, 0, glFormat, glFormat, glType, texture.image);
+			}
+
+			if (texture.generateMipmaps && isImagePowerOfTwo) _gl.generateMipmap(_gl.TEXTURE_2D);
+
+			texture.needsUpdate = false;
+
+			if (texture.onUpdate) texture.onUpdate();
+		} else {
+			_gl.activeTexture(_gl.TEXTURE0 + slot);
+			_gl.bindTexture(_gl.TEXTURE_2D, texture.__webglTexture);
+		}
+	};
+
+	function clampToMaxSize (image, maxSize) {
+		if (image.width <= maxSize && image.height <= maxSize) {
+			return image;
+		}
+
+		var maxDimension = Math.max(image.width, image.height);
+		var newWidth = Math.floor(image.width * maxSize / maxDimension);
+		var newHeight = Math.floor(image.height * maxSize / maxDimension);
+
+		var canvas = document.createElement('canvas');
+		canvas.width = newWidth;
+		canvas.height = newHeight;
+
+		var ctx = canvas.getContext("2d");
+		ctx.drawImage(image, 0, 0, image.width, image.height, 0, 0, newWidth, newHeight);
+
+		return canvas;
+	}
+
+	function setCubeTexture (texture, slot) {
+		if (texture.image.length === 6) {
+			if (texture.needsUpdate) {
+				if (! texture.image.__webglTextureCube) {
+					texture.image.__webglTextureCube = _gl.createTexture();
+				}
+
+				_gl.activeTexture(_gl.TEXTURE0 + slot);
+				_gl.bindTexture(_gl.TEXTURE_CUBE_MAP, texture.image.__webglTextureCube);
+
+				var cubeImage = [];
+
+				for (var i = 0; i < 6; i ++) {
+					if (_this.autoScaleCubemaps) {
+						cubeImage[i] = clampToMaxSize(texture.image[i], _maxCubemapSize);
+					} else {
+						cubeImage[i] = texture.image[i];
+					}
+				}
+
+				var image = cubeImage[0],
+				isImagePowerOfTwo = isPowerOfTwo(image.width) && isPowerOfTwo(image.height),
 				glFormat = paramoGL(texture.format),
 				glType = paramoGL(texture.type);
 
-				setTextureParameters(_gl.TEXTURE_2D, texture, isImagePowerOfTwo);
+				setTextureParameters(_gl.TEXTURE_CUBE_MAP, texture, isImagePowerOfTwo);
 
-				var mipmap, mipmaps = texture.mipmaps;
-
-				if (texture instanceof DataTexture) {
-					// use manually created mipmaps if available
-					// if there are no manual mipmaps
-					// set 0 level mipmap and then use GL to generate other mipmap levels
-
-					if (mipmaps.length > 0 && isImagePowerOfTwo) {
-						for (var i = 0, il = mipmaps.length; i < il; i ++) {
-							mipmap = mipmaps[ i ];
-							state.texImage2D(_gl.TEXTURE_2D, i, glFormat, mipmap.width, mipmap.height, 0, glFormat, glType, mipmap.data);
-						}
-
-						texture.generateMipmaps = false;
-					} else {
-						state.texImage2D(_gl.TEXTURE_2D, 0, glFormat, image.width, image.height, 0, glFormat, glType, image.data);
-					}
-				} else if (texture instanceof CompressedTexture) {
-					for (var i = 0, il = mipmaps.length; i < il; i ++) {
-						mipmap = mipmaps[ i ];
-
-						if (texture.format !== RGBAFormat && texture.format !== RGBFormat) {
-							if (state.getCompressedTextureFormats().indexOf(glFormat) > - 1) {
-								state.compressedTexImage2D(_gl.TEXTURE_2D, i, glFormat, mipmap.width, mipmap.height, 0, mipmap.data);
-							} else {
-								console.warn("WebGLRenderer: Attempt to load unsupported compressed texture format in .uploadTexture()");
-							}
-						} else {
-							state.texImage2D(_gl.TEXTURE_2D, i, glFormat, mipmap.width, mipmap.height, 0, glFormat, glType, mipmap.data);
-						}
-					}
-				} else {
-					// regular Texture (image, video, canvas)
-
-					// use manually created mipmaps if available
-					// if there are no manual mipmaps
-					// set 0 level mipmap and then use GL to generate other mipmap levels
-
-					if (mipmaps.length > 0 && isImagePowerOfTwo) {
-						for (var i = 0, il = mipmaps.length; i < il; i ++) {
-							mipmap = mipmaps[ i ];
-							state.texImage2D(_gl.TEXTURE_2D, i, glFormat, glFormat, glType, mipmap);
-						}
-
-						texture.generateMipmaps = false;
-					} else {
-						state.texImage2D(_gl.TEXTURE_2D, 0, glFormat, glFormat, glType, texture.image);
-					}
+				for (var i = 0; i < 6; i ++) {
+					_gl.texImage2D(_gl.TEXTURE_CUBE_MAP_POSITIVE_X + i, 0, glFormat, glFormat, glType, cubeImage[i]);
 				}
 
-				if (texture.generateMipmaps && isImagePowerOfTwo) _gl.generateMipmap(_gl.TEXTURE_2D);
+				if (texture.generateMipmaps && isImagePowerOfTwo)	_gl.generateMipmap(_gl.TEXTURE_CUBE_MAP);
 
-				textureProperties.__version = texture.version;
+				texture.needsUpdate = false;
 
-				if (texture.onUpdate) texture.onUpdate(texture);
+				if (texture.onUpdate) texture.onUpdate();
+			} else {
+				_gl.activeTexture(_gl.TEXTURE0 + slot);
+				_gl.bindTexture(_gl.TEXTURE_CUBE_MAP, texture.image.__webglTextureCube);
+			}
+		}
+	};
+
+	function setCubeTextureDynamic (texture, slot) {
+		_gl.activeTexture(_gl.TEXTURE0 + slot);
+		_gl.bindTexture(_gl.TEXTURE_CUBE_MAP, texture.__webglTexture);
+	};
+
+	function setupFrameBuffer (framebuffer, renderTarget, textureTarget) {
+		_gl.bindFramebuffer(_gl.FRAMEBUFFER, framebuffer);
+		_gl.framebufferTexture2D(_gl.FRAMEBUFFER, _gl.COLOR_ATTACHMENT0, textureTarget, renderTarget.__webglTexture, 0);
+	};
+
+	function setupRenderBuffer (renderbuffer, renderTarget ) {
+		_gl.bindRenderbuffer(_gl.RENDERBUFFER, renderbuffer);
+
+		if (renderTarget.depthBuffer && ! renderTarget.stencilBuffer) {
+			_gl.renderbufferStorage(_gl.RENDERBUFFER, _gl.DEPTH_COMPONENT16, renderTarget.width, renderTarget.height);
+			_gl.framebufferRenderbuffer(_gl.FRAMEBUFFER, _gl.DEPTH_ATTACHMENT, _gl.RENDERBUFFER, renderbuffer);
+
+		} else if(renderTarget.depthBuffer && renderTarget.stencilBuffer) {
+			_gl.renderbufferStorage(_gl.RENDERBUFFER, _gl.DEPTH_STENCIL, renderTarget.width, renderTarget.height);
+			_gl.framebufferRenderbuffer(_gl.FRAMEBUFFER, _gl.DEPTH_STENCIL_ATTACHMENT, _gl.RENDERBUFFER, renderbuffer);
+		} else {
+			_gl.renderbufferStorage(_gl.RENDERBUFFER, _gl.RGBA4, renderTarget.width, renderTarget.height);
+		}
+	};
+
+	this.setRenderTarget = function (renderTarget) {
+		var isCube = (renderTarget instanceof WebGLRenderTargetCube);
+
+		if (renderTarget && ! renderTarget.__webglFramebuffer) {
+			if(renderTarget.depthBuffer === undefined) renderTarget.depthBuffer = true;
+			if(renderTarget.stencilBuffer === undefined) renderTarget.stencilBuffer = true;
+
+			renderTarget.__webglTexture = _gl.createTexture();
+
+			var isTargetPowerOfTwo = isPowerOfTwo(renderTarget.width) && isPowerOfTwo(renderTarget.height),
+				glFormat = paramoGL(renderTarget.format),
+				glType = paramoGL(renderTarget.type);
+
+			if (isCube) {
+				renderTarget.__webglFramebuffer = [];
+				renderTarget.__webglRenderbuffer = [];
+
+				_gl.bindTexture(_gl.TEXTURE_CUBE_MAP, renderTarget.__webglTexture);
+				setTextureParameters(_gl.TEXTURE_CUBE_MAP, renderTarget, isTargetPowerOfTwo);
+
+				for (var i = 0; i < 6; i ++) {
+					renderTarget.__webglFramebuffer[i] = _gl.createFramebuffer();
+					renderTarget.__webglRenderbuffer[i] = _gl.createRenderbuffer();
+
+					_gl.texImage2D(_gl.TEXTURE_CUBE_MAP_POSITIVE_X + i, 0, glFormat, renderTarget.width, renderTarget.height, 0, glFormat, glType, null);
+
+					setupFrameBuffer(renderTarget.__webglFramebuffer[i], renderTarget, _gl.TEXTURE_CUBE_MAP_POSITIVE_X + i);
+					setupRenderBuffer(renderTarget.__webglRenderbuffer[i], renderTarget);
+				}
+
+				if (isTargetPowerOfTwo) _gl.generateMipmap(_gl.TEXTURE_CUBE_MAP);
+			} else {
+				renderTarget.__webglFramebuffer = _gl.createFramebuffer();
+				renderTarget.__webglRenderbuffer = _gl.createRenderbuffer();
+
+				_gl.bindTexture(_gl.TEXTURE_2D, renderTarget.__webglTexture);
+				setTextureParameters(_gl.TEXTURE_2D, renderTarget, isTargetPowerOfTwo);
+
+				_gl.texImage2D(_gl.TEXTURE_2D, 0, glFormat, renderTarget.width, renderTarget.height, 0, glFormat, glType, null);
+
+				setupFrameBuffer(renderTarget.__webglFramebuffer, renderTarget, _gl.TEXTURE_2D);
+				setupRenderBuffer(renderTarget.__webglRenderbuffer, renderTarget);
+
+				if (isTargetPowerOfTwo) _gl.generateMipmap(_gl.TEXTURE_2D);
 			}
 
-			this.setTexture = function (texture, slot) {
-				var textureProperties = properties.get(texture);
-
-				if (texture.version > 0 && textureProperties.__version !== texture.version) {
-					var image = texture.image;
-
-					if (image === undefined) {
-						console.warn('WebGLRenderer: Texture marked for update but image is undefined', texture);
-						return;
-					}
-
-					if (image.complete === false) {
-						console.warn('WebGLRenderer: Texture marked for update but image is incomplete', texture);
-						return;
-					}
-
-					uploadTexture(textureProperties, texture, slot);
-
-					return;
-				}
-
-				state.activeTexture(_gl.TEXTURE0 + slot);
-				state.bindTexture(_gl.TEXTURE_2D, textureProperties.__webglTexture);
-			};
-
-			function clampToMaxSize (image, maxSize) {
-				if (image.width > maxSize || image.height > maxSize) {
-					// Warning: Scaling through the canvas will only work with images that use
-					// premultiplied alpha.
-
-					var scale = maxSize / Math.max(image.width, image.height);
-
-					var canvas = document.createElement('canvas');
-					canvas.width = Math.floor(image.width * scale);
-					canvas.height = Math.floor(image.height * scale);
-
-					var context = canvas.getContext('2d');
-					context.drawImage(image, 0, 0, image.width, image.height, 0, 0, canvas.width, canvas.height);
-
-					console.warn('WebGLRenderer: image is too big (' + image.width + 'x' + image.height + '). Resized to ' + canvas.width + 'x' + canvas.height, image);
-
-					return canvas;
-				}
-
-				return image;
+			if (isCube) {
+				_gl.bindTexture(_gl.TEXTURE_CUBE_MAP, null);
+			} else {
+				_gl.bindTexture(_gl.TEXTURE_2D, null);
 			}
 
-			function isPowerOfTwo(image) {
-				return Math.isPowerOfTwo(image.width) && Math.isPowerOfTwo(image.height);
+			_gl.bindRenderbuffer(_gl.RENDERBUFFER, null);
+			_gl.bindFramebuffer(_gl.FRAMEBUFFER, null);
+		}
+
+		var framebuffer, width, height, vx, vy;
+
+		if (renderTarget) {
+			if (isCube) {
+				framebuffer = renderTarget.__webglFramebuffer[renderTarget.activeCubeFace];
+			} else {
+				framebuffer = renderTarget.__webglFramebuffer;
 			}
 
-			function textureNeedsPowerOfTwo(texture) {
-				if (texture.wrapS !== ClampToEdgeWrapping || texture.wrapT !== ClampToEdgeWrapping) return true;
-				if (texture.minFilter !== NearestFilter && texture.minFilter !== LinearFilter) return true;
+			width = renderTarget.width;
+			height = renderTarget.height;
 
-				return false;
+			vx = 0;
+			vy = 0;
+		} else {
+			framebuffer = null;
+
+			width = _viewportWidth;
+			height = _viewportHeight;
+
+			vx = _viewportX;
+			vy = _viewportY;
+		}
+
+		if (framebuffer !== _currentFramebuffer) {
+			_gl.bindFramebuffer(_gl.FRAMEBUFFER, framebuffer);
+			_gl.viewport(vx, vy, width, height);
+
+			_currentFramebuffer = framebuffer;
+		}
+
+		_currentWidth = width;
+		_currentHeight = height;
+	};
+
+	function updateRenderTargetMipmap (renderTarget) {
+		if (renderTarget instanceof WebGLRenderTargetCube) {
+			_gl.bindTexture(_gl.TEXTURE_CUBE_MAP, renderTarget.__webglTexture);
+			_gl.generateMipmap(_gl.TEXTURE_CUBE_MAP);
+			_gl.bindTexture(_gl.TEXTURE_CUBE_MAP, null);
+		} else {
+			_gl.bindTexture(_gl.TEXTURE_2D, renderTarget.__webglTexture);
+			_gl.generateMipmap(_gl.TEXTURE_2D);
+			_gl.bindTexture(_gl.TEXTURE_2D, null);
+		}
+	};
+
+	function filterFallback (f) {
+		switch (f) {
+			case NearestFilter:
+			case NearestMipMapNearestFilter:
+			case NearestMipMapLinearFilter: return _gl.NEAREST; break;
+
+			case LinearFilter:
+			case LinearMipMapNearestFilter:
+			case LinearMipMapLinearFilter:
+			default:
+
+				return _gl.LINEAR; break;
+		}
+	};
+
+	function paramoGL (p) {
+		switch (p) {
+			case RepeatWrapping: return _gl.REPEAT; break;
+			case ClampToEdgeWrapping: return _gl.CLAMP_TO_EDGE; break;
+			case MirroredRepeatWrapping: return _gl.MIRRORED_REPEAT; break;
+
+			case NearestFilter: return _gl.NEAREST; break;
+			case NearestMipMapNearestFilter: return _gl.NEAREST_MIPMAP_NEAREST; break;
+			case NearestMipMapLinearFilter: return _gl.NEAREST_MIPMAP_LINEAR; break;
+
+			case LinearFilter: return _gl.LINEAR; break;
+			case LinearMipMapNearestFilter: return _gl.LINEAR_MIPMAP_NEAREST; break;
+			case LinearMipMapLinearFilter: return _gl.LINEAR_MIPMAP_LINEAR; break;
+
+			case ByteType: return _gl.BYTE; break;
+			case UnsignedByteType: return _gl.UNSIGNED_BYTE; break;
+			case ShortType: return _gl.SHORT; break;
+			case UnsignedShortType: return _gl.UNSIGNED_SHORT; break;
+			case IntType: return _gl.INT; break;
+			case UnsignedIntType: return _gl.UNSIGNED_INT; break;
+			case FloatType: return _gl.FLOAT; break;
+
+			case AlphaFormat: return _gl.ALPHA; break;
+			case RGBFormat: return _gl.RGB; break;
+			case RGBAFormat: return _gl.RGBA; break;
+			case LuminanceFormat: return _gl.LUMINANCE; break;
+			case LuminanceAlphaFormat: return _gl.LUMINANCE_ALPHA; break;
+
+			case AddEquation: return _gl.FUNC_ADD; break;
+			case SubtractEquation: return _gl.FUNC_SUBTRACT; break;
+			case ReverseSubtractEquation: return _gl.FUNC_REVERSE_SUBTRACT; break;
+
+			case ZeroFactor: return _gl.ZERO; break;
+			case OneFactor: return _gl.ONE; break;
+			case SrcColorFactor: return _gl.SRC_COLOR; break;
+			case OneMinusSrcColorFactor: return _gl.ONE_MINUS_SRC_COLOR; break;
+			case SrcAlphaFactor: return _gl.SRC_ALPHA; break;
+			case OneMinusSrcAlphaFactor: return _gl.ONE_MINUS_SRC_ALPHA; break;
+			case DstAlphaFactor: return _gl.DST_ALPHA; break;
+			case OneMinusDstAlphaFactor: return _gl.ONE_MINUS_DST_ALPHA; break;
+
+			case DstColorFactor: return _gl.DST_COLOR; break;
+			case OneMinusDstColorFactor: return _gl.ONE_MINUS_DST_COLOR; break;
+			case SrcAlphaSaturateFactor: return _gl.SRC_ALPHA_SATURATE; break;
+		}
+
+		return 0;
+	};
+
+	function allocateBones (object) {
+		var maxBones = 50;
+
+		if (object !== undefined && object instanceof SkinnedMesh) {
+			maxBones = object.bones.length;
+		}
+
+		return maxBones;
+	};
+
+	function allocateLights (lights) {
+		var l, ll, light, dirLights, pointLights, spotLights, maxDirLights, maxPointLights, maxSpotLights;
+
+		dirLights = pointLights = spotLights = maxDirLights = maxPointLights = maxSpotLights = 0;
+
+		for (l = 0, ll = lights.length; l < ll; l ++) {
+			light = lights[l];
+
+			if (light.onlyShadow) continue;
+
+			if (light instanceof DirectionalLight) dirLights ++;
+			if (light instanceof PointLight) pointLights ++;
+			if (light instanceof SpotLight) spotLights ++;
+		}
+
+		if ((pointLights + spotLights + dirLights) <= _maxLights) {
+			maxDirLights = dirLights;
+			maxPointLights = pointLights;
+			maxSpotLights = spotLights;
+		} else {
+			maxDirLights = Math.ceil(_maxLights * dirLights / (pointLights + dirLights));
+			maxPointLights = _maxLights - maxDirLights;
+			maxSpotLights = maxPointLights;
+		}
+
+		return { 'directional' : maxDirLights, 'point' : maxPointLights, 'spot': maxSpotLights };
+	};
+
+	function allocateShadows (lights) {
+		var l, ll, light, maxShadows = 0;
+
+		for (l = 0, ll = lights.length; l < ll; l++) {
+			light = lights[l];
+
+			if (! light.castShadow) continue;
+
+			if (light instanceof SpotLight) maxShadows ++;
+			if (light instanceof DirectionalLight && ! light.shadowCascade) maxShadows ++;
+		}
+
+		return maxShadows;
+	};
+
+	function initGL () {
+		var gl;
+
+		try {
+			if (! (gl = _canvas.getContext('experimental-webgl', { alpha: _alpha, premultipliedAlpha: _premultipliedAlpha, antialias: _antialias, stencil: _stencil, preserveDrawingBuffer: _preserveDrawingBuffer }))) {
+				throw 'Error creating WebGL context.';
 			}
+		} catch (error) {
+			console.error(error);
+		}
 
-			function makePowerOfTwo(image) {
-				if (image instanceof HTMLImageElement || image instanceof HTMLCanvasElement) {
-					var canvas = document.createElement('canvas');
-					canvas.width = Math.nearestPowerOfTwo(image.width);
-					canvas.height = Math.nearestPowerOfTwo(image.height);
+		if (! gl.getExtension('OES_texture_float')) {
+			console.log('WebGLRenderer: Float textures not supported.');
+		}
 
-					var context = canvas.getContext('2d');
-					context.drawImage(image, 0, 0, canvas.width, canvas.height);
+		return gl;
+	};
 
-					console.warn('WebGLRenderer: image is not power of two (' + image.width + 'x' + image.height + '). Resized to ' + canvas.width + 'x' + canvas.height, image);
+	function setDefaultGLState () {
+		_gl.clearColor(0, 0, 0, 1);
+		_gl.clearDepth(1);
+		_gl.clearStencil(0);
 
-					return canvas;
-				}
+		_gl.enable(_gl.DEPTH_TEST);
+		_gl.depthFunc(_gl.LEQUAL);
 
-				return image;
-			}
+		_gl.frontFace(_gl.CCW);
+		_gl.cullFace(_gl.BACK);
+		_gl.enable(_gl.CULL_FACE);
 
-			function setCubeTexture (texture, slot) {
-				var textureProperties = properties.get(texture);
+		_gl.enable(_gl.BLEND);
+		_gl.blendEquation(_gl.FUNC_ADD);
+		_gl.blendFunc(_gl.SRC_ALPHA, _gl.ONE_MINUS_SRC_ALPHA);
 
-				if (texture.image.length === 6) {
-					if (texture.version > 0 && textureProperties.__version !== texture.version) {
-						if (! textureProperties.__image__webglTextureCube) {
-							texture.addEventListener('dispose', onTextureDispose);
+		_gl.clearColor(_clearColor.r, _clearColor.g, _clearColor.b, _clearAlpha);
+	};
 
-							textureProperties.__image__webglTextureCube = _gl.createTexture();
+	this.shadowMapPlugin = new ShadowMapPlugin();
+	this.addPrePlugin(this.shadowMapPlugin);
 
-							_infoMemory.textures ++;
-						}
-
-						state.activeTexture(_gl.TEXTURE0 + slot);
-						state.bindTexture(_gl.TEXTURE_CUBE_MAP, textureProperties.__image__webglTextureCube);
-
-						_gl.pixelStorei(_gl.UNPACK_FLIP_Y_WEBGL, texture.flipY);
-
-						var isCompressed = texture instanceof CompressedTexture;
-						var isDataTexture = texture.image[ 0 ] instanceof DataTexture;
-
-						var cubeImage = [];
-
-						for (var i = 0; i < 6; i ++) {
-							if (_this.autoScaleCubemaps && ! isCompressed && ! isDataTexture) {
-								cubeImage[ i ] = clampToMaxSize(texture.image[ i ], capabilities.maxCubemapSize);
-							} else {
-								cubeImage[ i ] = isDataTexture ? texture.image[ i ].image : texture.image[ i ];
-							}
-						}
-
-						var image = cubeImage[ 0 ],
-						isImagePowerOfTwo = isPowerOfTwo(image),
-						glFormat = paramoGL(texture.format),
-						glType = paramoGL(texture.type);
-
-						setTextureParameters(_gl.TEXTURE_CUBE_MAP, texture, isImagePowerOfTwo);
-
-						for (var i = 0; i < 6; i ++) {
-							if (! isCompressed) {
-								if (isDataTexture) {
-									state.texImage2D(_gl.TEXTURE_CUBE_MAP_POSITIVE_X + i, 0, glFormat, cubeImage[ i ].width, cubeImage[ i ].height, 0, glFormat, glType, cubeImage[ i ].data);
-								} else {
-									state.texImage2D(_gl.TEXTURE_CUBE_MAP_POSITIVE_X + i, 0, glFormat, glFormat, glType, cubeImage[ i ]);
-								}
-							} else {
-								var mipmap, mipmaps = cubeImage[ i ].mipmaps;
-
-								for (var j = 0, jl = mipmaps.length; j < jl; j ++) {
-									mipmap = mipmaps[ j ];
-
-									if (texture.format !== RGBAFormat && texture.format !== RGBFormat) {
-										if (state.getCompressedTextureFormats().indexOf(glFormat) > - 1) {
-											state.compressedTexImage2D(_gl.TEXTURE_CUBE_MAP_POSITIVE_X + i, j, glFormat, mipmap.width, mipmap.height, 0, mipmap.data);
-										} else {
-											console.warn("WebGLRenderer: Attempt to load unsupported compressed texture format in .setCubeTexture()");
-										}
-									} else {
-										state.texImage2D(_gl.TEXTURE_CUBE_MAP_POSITIVE_X + i, j, glFormat, mipmap.width, mipmap.height, 0, glFormat, glType, mipmap.data);
-									}
-								}
-							}
-						}
-
-						if (texture.generateMipmaps && isImagePowerOfTwo) {
-							_gl.generateMipmap(_gl.TEXTURE_CUBE_MAP);
-						}
-
-						textureProperties.__version = texture.version;
-
-						if (texture.onUpdate) texture.onUpdate(texture);
-					} else {
-						state.activeTexture(_gl.TEXTURE0 + slot);
-						state.bindTexture(_gl.TEXTURE_CUBE_MAP, textureProperties.__image__webglTextureCube);
-					}
-				}
-			}
-
-			function setCubeTextureDynamic (texture, slot) {
-				state.activeTexture(_gl.TEXTURE0 + slot);
-				state.bindTexture(_gl.TEXTURE_CUBE_MAP, properties.get(texture).__webglTexture);
-			}
-
-			// Render targets
-
-			function setupFrameBuffer (framebuffer, renderTarget, textureTarget) {
-				_gl.bindFramebuffer(_gl.FRAMEBUFFER, framebuffer);
-				_gl.framebufferTexture2D(_gl.FRAMEBUFFER, _gl.COLOR_ATTACHMENT0, textureTarget, properties.get(renderTarget.texture).__webglTexture, 0);
-			}
-
-			function setupRenderBuffer (renderbuffer, renderTarget) {
-				_gl.bindRenderbuffer(_gl.RENDERBUFFER, renderbuffer);
-
-				if (renderTarget.depthBuffer && ! renderTarget.stencilBuffer) {
-					_gl.renderbufferStorage(_gl.RENDERBUFFER, _gl.DEPTH_COMPONENT16, renderTarget.width, renderTarget.height);
-					_gl.framebufferRenderbuffer(_gl.FRAMEBUFFER, _gl.DEPTH_ATTACHMENT, _gl.RENDERBUFFER, renderbuffer);
-
-				/* For some reason this is not working. Defaulting to RGBA4.
-				} else if (! renderTarget.depthBuffer && renderTarget.stencilBuffer) {
-					_gl.renderbufferStorage(_gl.RENDERBUFFER, _gl.STENCIL_INDEX8, renderTarget.width, renderTarget.height);
-					_gl.framebufferRenderbuffer(_gl.FRAMEBUFFER, _gl.STENCIL_ATTACHMENT, _gl.RENDERBUFFER, renderbuffer);
-				*/
-				} else if (renderTarget.depthBuffer && renderTarget.stencilBuffer) {
-					_gl.renderbufferStorage(_gl.RENDERBUFFER, _gl.DEPTH_STENCIL, renderTarget.width, renderTarget.height);
-					_gl.framebufferRenderbuffer(_gl.FRAMEBUFFER, _gl.DEPTH_STENCIL_ATTACHMENT, _gl.RENDERBUFFER, renderbuffer);
-				} else {
-					_gl.renderbufferStorage(_gl.RENDERBUFFER, _gl.RGBA4, renderTarget.width, renderTarget.height);
-				}
-			}
-
-			this.setRenderTarget = function (renderTarget) {
-				var isCube = (renderTarget instanceof WebGLRenderTargetCube);
-
-				if (renderTarget && properties.get(renderTarget).__webglFramebuffer === undefined) {
-					var renderTargetProperties = properties.get(renderTarget);
-					var textureProperties = properties.get(renderTarget.texture);
-
-					if (renderTarget.depthBuffer === undefined) renderTarget.depthBuffer = true;
-					if (renderTarget.stencilBuffer === undefined) renderTarget.stencilBuffer = true;
-
-					renderTarget.addEventListener('dispose', onRenderTargetDispose);
-
-					textureProperties.__webglTexture = _gl.createTexture();
-
-					_infoMemory.textures ++;
-
-					// Setup texture, create render and frame buffers
-
-					var isTargetPowerOfTwo = isPowerOfTwo(renderTarget),
-						glFormat = paramoGL(renderTarget.texture.format),
-						glType = paramoGL(renderTarget.texture.type);
-
-					if (isCube) {
-						renderTargetProperties.__webglFramebuffer = [];
-						renderTargetProperties.__webglRenderbuffer = [];
-
-						state.bindTexture(_gl.TEXTURE_CUBE_MAP, textureProperties.__webglTexture);
-
-						setTextureParameters(_gl.TEXTURE_CUBE_MAP, renderTarget.texture, isTargetPowerOfTwo);
-
-						for (var i = 0; i < 6; i ++) {
-							renderTargetProperties.__webglFramebuffer[ i ] = _gl.createFramebuffer();
-							renderTargetProperties.__webglRenderbuffer[ i ] = _gl.createRenderbuffer();
-							state.texImage2D(_gl.TEXTURE_CUBE_MAP_POSITIVE_X + i, 0, glFormat, renderTarget.width, renderTarget.height, 0, glFormat, glType, null);
-
-							setupFrameBuffer(renderTargetProperties.__webglFramebuffer[ i ], renderTarget, _gl.TEXTURE_CUBE_MAP_POSITIVE_X + i);
-							setupRenderBuffer(renderTargetProperties.__webglRenderbuffer[ i ], renderTarget);
-						}
-
-						if (renderTarget.texture.generateMipmaps && isTargetPowerOfTwo) _gl.generateMipmap(_gl.TEXTURE_CUBE_MAP);
-					} else {
-						renderTargetProperties.__webglFramebuffer = _gl.createFramebuffer();
-
-						if (renderTarget.shareDepthFrom) {
-							renderTargetProperties.__webglRenderbuffer = renderTarget.shareDepthFrom.__webglRenderbuffer;
-						} else {
-							renderTargetProperties.__webglRenderbuffer = _gl.createRenderbuffer();
-						}
-
-						state.bindTexture(_gl.TEXTURE_2D, textureProperties.__webglTexture);
-						setTextureParameters(_gl.TEXTURE_2D, renderTarget.texture, isTargetPowerOfTwo);
-
-						state.texImage2D(_gl.TEXTURE_2D, 0, glFormat, renderTarget.width, renderTarget.height, 0, glFormat, glType, null);
-
-						setupFrameBuffer(renderTargetProperties.__webglFramebuffer, renderTarget, _gl.TEXTURE_2D);
-
-						if (renderTarget.shareDepthFrom) {
-							if (renderTarget.depthBuffer && ! renderTarget.stencilBuffer) {
-								_gl.framebufferRenderbuffer(_gl.FRAMEBUFFER, _gl.DEPTH_ATTACHMENT, _gl.RENDERBUFFER, renderTargetProperties.__webglRenderbuffer);
-							} else if (renderTarget.depthBuffer && renderTarget.stencilBuffer) {
-								_gl.framebufferRenderbuffer(_gl.FRAMEBUFFER, _gl.DEPTH_STENCIL_ATTACHMENT, _gl.RENDERBUFFER, renderTargetProperties.__webglRenderbuffer);
-							}
-						} else {
-							setupRenderBuffer(renderTargetProperties.__webglRenderbuffer, renderTarget);
-						}
-
-						if (renderTarget.texture.generateMipmaps && isTargetPowerOfTwo) _gl.generateMipmap(_gl.TEXTURE_2D);
-					}
-
-					// Release everything
-
-					if (isCube) {
-						state.bindTexture(_gl.TEXTURE_CUBE_MAP, null);
-					} else {
-						state.bindTexture(_gl.TEXTURE_2D, null);
-					}
-
-					_gl.bindRenderbuffer(_gl.RENDERBUFFER, null);
-					_gl.bindFramebuffer(_gl.FRAMEBUFFER, null);
-				}
-
-				var framebuffer, width, height, vx, vy;
-
-				if (renderTarget) {
-					var renderTargetProperties = properties.get(renderTarget);
-
-					if (isCube) {
-						framebuffer = renderTargetProperties.__webglFramebuffer[ renderTarget.activeCubeFace ];
-					} else {
-						framebuffer = renderTargetProperties.__webglFramebuffer;
-					}
-
-					width = renderTarget.width;
-					height = renderTarget.height;
-
-					vx = 0;
-					vy = 0;
-				} else {
-					framebuffer = null;
-
-					width = _viewportWidth;
-					height = _viewportHeight;
-
-					vx = _viewportX;
-					vy = _viewportY;
-				}
-
-				if (framebuffer !== _currentFramebuffer) {
-					_gl.bindFramebuffer(_gl.FRAMEBUFFER, framebuffer);
-					_gl.viewport(vx, vy, width, height);
-
-					_currentFramebuffer = framebuffer;
-				}
-
-				if (isCube) {
-					var textureProperties = properties.get(renderTarget.texture);
-					_gl.framebufferTexture2D(_gl.FRAMEBUFFER, _gl.COLOR_ATTACHMENT0, _gl.TEXTURE_CUBE_MAP_POSITIVE_X + renderTarget.activeCubeFace, textureProperties.__webglTexture, 0);
-				}
-
-				_currentWidth = width;
-				_currentHeight = height;
-			};
-
-			this.readRenderTargetPixels = function (renderTarget, x, y, width, height, buffer) {
-				if (renderTarget instanceof WebGLRenderTarget === false) {
-					console.error('WebGLRenderer.readRenderTargetPixels: renderTarget is not WebGLRenderTarget.');
-					return;
-				}
-
-				var framebuffer = properties.get(renderTarget).__webglFramebuffer;
-
-				if (framebuffer) {
-					var restore = false;
-
-					if (framebuffer !== _currentFramebuffer) {
-						_gl.bindFramebuffer(_gl.FRAMEBUFFER, framebuffer);
-
-						restore = true;
-					}
-
-					try {
-						var texture = renderTarget.texture;
-
-						if (texture.format !== RGBAFormat
-							&& paramoGL(texture.format) !== _gl.getParameter(_gl.IMPLEMENTATION_COLOR_READ_FORMAT)) {
-							console.error('WebGLRenderer.readRenderTargetPixels: renderTarget is not in RGBA or implementation defined format.');
-							return;
-						}
-
-						if (texture.type !== UnsignedByteType
-							&& paramoGL(texture.type) !== _gl.getParameter(_gl.IMPLEMENTATION_COLOR_READ_TYPE)
-							&& ! (texture.type === FloatType && extensions.get('WEBGL_color_buffer_float'))
-							&& ! (texture.type === HalfFloatType && extensions.get('EXT_color_buffer_half_float'))) {
-							console.error('WebGLRenderer.readRenderTargetPixels: renderTarget is not in UnsignedByteType or implementation defined type.');
-							return;
-						}
-
-						if (_gl.checkFramebufferStatus(_gl.FRAMEBUFFER) === _gl.FRAMEBUFFER_COMPLETE) {
-							_gl.readPixels(x, y, width, height, paramoGL(texture.format), paramoGL(texture.type), buffer);
-						} else {
-							console.error('WebGLRenderer.readRenderTargetPixels: readPixels from renderTarget failed. Framebuffer not complete.');
-						}
-					} finally {
-						if (restore) {
-							_gl.bindFramebuffer(_gl.FRAMEBUFFER, _currentFramebuffer);
-						}
-					}
-				}
-			};
-
-			function updateRenderTargetMipmap(renderTarget) {
-				var target = renderTarget instanceof WebGLRenderTargetCube ? _gl.TEXTURE_CUBE_MAP : _gl.TEXTURE_2D;
-				var texture = properties.get(renderTarget.texture).__webglTexture;
-
-				state.bindTexture(target, texture);
-				_gl.generateMipmap(target);
-				state.bindTexture(target, null);
-			}
-
-			// Fallback filters for non-power-of-2 textures
-
-			function filterFallback (f) {
-				if (f === NearestFilter || f === NearestMipMapNearestFilter || f === NearestMipMapLinearFilter) {
-					return _gl.NEAREST;
-				}
-
-				return _gl.LINEAR;
-			}
-
-			// Map js constants to WebGL constants
-
-			function paramoGL (p) {
-				var extension;
-
-				if (p === RepeatWrapping) return _gl.REPEAT;
-				if (p === ClampToEdgeWrapping) return _gl.CLAMP_TO_EDGE;
-				if (p === MirroredRepeatWrapping) return _gl.MIRRORED_REPEAT;
-
-				if (p === NearestFilter) return _gl.NEAREST;
-				if (p === NearestMipMapNearestFilter) return _gl.NEAREST_MIPMAP_NEAREST;
-				if (p === NearestMipMapLinearFilter) return _gl.NEAREST_MIPMAP_LINEAR;
-
-				if (p === LinearFilter) return _gl.LINEAR;
-				if (p === LinearMipMapNearestFilter) return _gl.LINEAR_MIPMAP_NEAREST;
-				if (p === LinearMipMapLinearFilter) return _gl.LINEAR_MIPMAP_LINEAR;
-
-				if (p === UnsignedByteType) return _gl.UNSIGNED_BYTE;
-				if (p === UnsignedShort4444Type) return _gl.UNSIGNED_SHORT_4_4_4_4;
-				if (p === UnsignedShort5551Type) return _gl.UNSIGNED_SHORT_5_5_5_1;
-				if (p === UnsignedShort565Type) return _gl.UNSIGNED_SHORT_5_6_5;
-
-				if (p === ByteType) return _gl.BYTE;
-				if (p === ShortType) return _gl.SHORT;
-				if (p === UnsignedShortType) return _gl.UNSIGNED_SHORT;
-				if (p === IntType) return _gl.INT;
-				if (p === UnsignedIntType) return _gl.UNSIGNED_INT;
-				if (p === FloatType) return _gl.FLOAT;
-
-				extension = extensions.get('OES_texture_half_float');
-
-				if (extension !== null) {
-					if (p === HalfFloatType) return extension.HALF_FLOAT_OES;
-				}
-
-				if (p === AlphaFormat) return _gl.ALPHA;
-				if (p === RGBFormat) return _gl.RGB;
-				if (p === RGBAFormat) return _gl.RGBA;
-				if (p === LuminanceFormat) return _gl.LUMINANCE;
-				if (p === LuminanceAlphaFormat) return _gl.LUMINANCE_ALPHA;
-
-				if (p === AddEquation) return _gl.FUNC_ADD;
-				if (p === SubtractEquation) return _gl.FUNC_SUBTRACT;
-				if (p === ReverseSubtractEquation) return _gl.FUNC_REVERSE_SUBTRACT;
-
-				if (p === ZeroFactor) return _gl.ZERO;
-				if (p === OneFactor) return _gl.ONE;
-				if (p === SrcColorFactor) return _gl.SRC_COLOR;
-				if (p === OneMinusSrcColorFactor) return _gl.ONE_MINUS_SRC_COLOR;
-				if (p === SrcAlphaFactor) return _gl.SRC_ALPHA;
-				if (p === OneMinusSrcAlphaFactor) return _gl.ONE_MINUS_SRC_ALPHA;
-				if (p === DstAlphaFactor) return _gl.DST_ALPHA;
-				if (p === OneMinusDstAlphaFactor) return _gl.ONE_MINUS_DST_ALPHA;
-
-				if (p === DstColorFactor) return _gl.DST_COLOR;
-				if (p === OneMinusDstColorFactor) return _gl.ONE_MINUS_DST_COLOR;
-				if (p === SrcAlphaSaturateFactor) return _gl.SRC_ALPHA_SATURATE;
-
-				extension = extensions.get('WEBGL_compressed_texture_s3tc');
-
-				if (extension !== null) {
-					if (p === RGB_S3TC_DXT1_Format) return extension.COMPRESSED_RGB_S3TC_DXT1_EXT;
-					if (p === RGBA_S3TC_DXT1_Format) return extension.COMPRESSED_RGBA_S3TC_DXT1_EXT;
-					if (p === RGBA_S3TC_DXT3_Format) return extension.COMPRESSED_RGBA_S3TC_DXT3_EXT;
-					if (p === RGBA_S3TC_DXT5_Format) return extension.COMPRESSED_RGBA_S3TC_DXT5_EXT;
-				}
-
-				extension = extensions.get('WEBGL_compressed_texture_pvrtc');
-
-				if (extension !== null) {
-					if (p === RGB_PVRTC_4BPPV1_Format) return extension.COMPRESSED_RGB_PVRTC_4BPPV1_IMG;
-					if (p === RGB_PVRTC_2BPPV1_Format) return extension.COMPRESSED_RGB_PVRTC_2BPPV1_IMG;
-					if (p === RGBA_PVRTC_4BPPV1_Format) return extension.COMPRESSED_RGBA_PVRTC_4BPPV1_IMG;
-					if (p === RGBA_PVRTC_2BPPV1_Format) return extension.COMPRESSED_RGBA_PVRTC_2BPPV1_IMG;
-				}
-
-				extension = extensions.get('EXT_blend_minmax');
-
-				if (extension !== null) {
-					if (p === MinEquation) return extension.MIN_EXT;
-					if (p === MaxEquation) return extension.MAX_EXT;
-				}
-
-				return 0;
-			}
-
-			// DEPRECATED
-
-			this.supportsFloatTextures = function () {
-				console.warn('WebGLRenderer: .supportsFloatTextures() is now .extensions.get(\'OES_texture_float\').');
-				return extensions.get('OES_texture_float');
-			};
-
-			this.supportsHalfFloatTextures = function () {
-				console.warn('WebGLRenderer: .supportsHalfFloatTextures() is now .extensions.get(\'OES_texture_half_float\').');
-				return extensions.get('OES_texture_half_float');
-			};
-
-			this.supportsStandardDerivatives = function () {
-				console.warn('WebGLRenderer: .supportsStandardDerivatives() is now .extensions.get(\'OES_standard_derivatives\').');
-				return extensions.get('OES_standard_derivatives');
-			};
-
-			this.supportsCompressedTextureS3TC = function () {
-				console.warn('WebGLRenderer: .supportsCompressedTextureS3TC() is now .extensions.get(\'WEBGL_compressed_texture_s3tc\').');
-				return extensions.get('WEBGL_compressed_texture_s3tc');
-			};
-
-			this.supportsCompressedTexturePVRTC = function () {
-				console.warn('WebGLRenderer: .supportsCompressedTexturePVRTC() is now .extensions.get(\'WEBGL_compressed_texture_pvrtc\').');
-				return extensions.get('WEBGL_compressed_texture_pvrtc');
-			};
-
-			this.supportsBlendMinMax = function () {
-				console.warn('WebGLRenderer: .supportsBlendMinMax() is now .extensions.get(\'EXT_blend_minmax\').');
-				return extensions.get('EXT_blend_minmax');
-			};
-
-			this.supportsVertexTextures = function () {
-				return capabilities.vertexTextures;
-			};
-
-			this.supportsInstancedArrays = function () {
-				console.warn('WebGLRenderer: .supportsInstancedArrays() is now .extensions.get(\'ANGLE_instanced_arrays\').');
-				return extensions.get('ANGLE_instanced_arrays');
-			};
-
-			//
-
-			this.initMaterial = function () {
-				console.warn('WebGLRenderer: .initMaterial() has been removed.');
-			};
-
-			this.addPrePlugin = function () {
-				console.warn('WebGLRenderer: .addPrePlugin() has been removed.');
-			};
-
-			this.addPostPlugin = function () {
-				console.warn('WebGLRenderer: .addPostPlugin() has been removed.');
-			};
-
-			this.updateShadowMap = function () {
-				console.warn('WebGLRenderer: .updateShadowMap() has been removed.');
-			};
-
-			Object.defineProperties(this, {
-				shadowMapEnabled: {
-					get: function () {
-						return shadowMap.enabled;
-					},
-					set: function (value) {
-						console.warn('WebGLRenderer: .shadowMapEnabled is now .shadowMap.enabled.');
-						shadowMap.enabled = value;
-					}
-				},
-				shadowMapType: {
-					get: function () {
-						return shadowMap.type;
-					},
-					set: function (value) {
-						console.warn('WebGLRenderer: .shadowMapType is now .shadowMap.type.');
-						shadowMap.type = value;
-					}
-				},
-				shadowMapCullFace: {
-					get: function () {
-						return shadowMap.cullFace;
-					},
-					set: function (value) {
-						console.warn('WebGLRenderer: .shadowMapCullFace is now .shadowMap.cullFace.');
-						shadowMap.cullFace = value;
-					}
-				},
-				shadowMapDebug: {
-					get: function () {
-						return shadowMap.debug;
-					},
-					set: function (value) {
-						console.warn('WebGLRenderer: .shadowMapDebug is now .shadowMap.debug.');
-						shadowMap.debug = value;
-					}
-				}
-			});
-		};
-
-		return WebGLRenderer;
-	}();
-});
+	this.addPostPlugin(new SpritePlugin());
+	this.addPostPlugin(new LensFlarePlugin());
+};

@@ -1,222 +1,76 @@
-define([], function() {
-	this.UVMapping = 300;
+Texture = function (image, mapping, wrapS, wrapT, magFilter, minFilter, format, type) {
+	this.id = TextureCount ++;
 
-	this.Texture = function() {
-		function Texture(image, mapping, wrapS, wrapT, magFilter, minFilter, format, type, anisotropy) {
-			Object.defineProperty(this, 'id', { value: TextureIdCount ++ });
+	this.image = image;
 
-			this.uuid = Math.generateUUID();
+	this.mapping = mapping !== undefined ? mapping : new UVMapping();
 
-			this.name = '';
-			this.sourceFile = '';
+	this.wrapS = wrapS !== undefined ? wrapS : ClampToEdgeWrapping;
+	this.wrapT = wrapT !== undefined ? wrapT : ClampToEdgeWrapping;
 
-			this.image = image !== undefined ? image : Texture.DEFAULT_IMAGE;
-			this.mipmaps = [];
+	this.magFilter = magFilter !== undefined ? magFilter : LinearFilter;
+	this.minFilter = minFilter !== undefined ? minFilter : LinearMipMapLinearFilter;
 
-			this.mapping = mapping !== undefined ? mapping : Texture.DEFAULT_MAPPING;
+	this.format = format !== undefined ? format : RGBAFormat;
+	this.type = type !== undefined ? type : UnsignedByteType;
 
-			this.wrapS = wrapS !== undefined ? wrapS : ClampToEdgeWrapping;
-			this.wrapT = wrapT !== undefined ? wrapT : ClampToEdgeWrapping;
+	this.offset = new Vector2(0, 0);
+	this.repeat = new Vector2(1, 1);
 
-			this.magFilter = magFilter !== undefined ? magFilter : LinearFilter;
-			this.minFilter = minFilter !== undefined ? minFilter : LinearMipMapLinearFilter;
+	this.generateMipmaps = true;
+	this.premultiplyAlpha = false;
 
-			this.anisotropy = anisotropy !== undefined ? anisotropy : 1;
+	this.needsUpdate = false;
+	this.onUpdate = null;
+};
 
-			this.format = format !== undefined ? format : RGBAFormat;
-			this.type = type !== undefined ? type : UnsignedByteType;
+Texture.prototype = {
+	constructor: Texture,
 
-			this.offset = new Vector2(0, 0);
-			this.repeat = new Vector2(1, 1);
+	clone: function () {
+		var clonedTexture = new Texture(this.image, this.mapping, this.wrapS, this.wrapT, this.magFilter, this.minFilter, this.format, this.type);
 
-			this.generateMipmaps = true;
-			this.premultiplyAlpha = false;
-			this.flipY = true;
-			this.unpackAlignment = 4;
+		clonedTexture.offset.copy(this.offset);
+		clonedTexture.repeat.copy(this.repeat);
 
-			this.version = 0;
-			this.onUpdate = null;
-		};
+		return clonedTexture;
+	}
+};
 
-		Texture.DEFAULT_IMAGE = undefined;
-		Texture.DEFAULT_MAPPING = UVMapping;
+window.TextureCount = 0;
 
-		Texture.prototype = {
-			constructor: Texture,
+window.MultiplyOperation = 0;
+window.MixOperation = 1;
 
-			set needsUpdate (value) {
-				if (value === true) this.version ++;
-			},
+UVMapping = function () {};
 
-			clone: function () {
-				return new this.constructor().copy(this);
-			},
+CubeReflectionMapping = function () {};
+CubeRefractionMapping = function () {};
 
-			copy: function (source) {
-				this.image = source.image;
-				this.mipmaps = source.mipmaps.slice(0);
+SphericalReflectionMapping = function () {};
+SphericalRefractionMapping = function () {};
 
-				this.mapping = source.mapping;
+window.RepeatWrapping = 0;
+window.ClampToEdgeWrapping = 1;
+window.MirroredRepeatWrapping = 2;
 
-				this.wrapS = source.wrapS;
-				this.wrapT = source.wrapT;
+window.NearestFilter = 3;
+window.NearestMipMapNearestFilter = 4;
+window.NearestMipMapLinearFilter = 5;
+window.LinearFilter = 6;
+window.LinearMipMapNearestFilter = 7;
+window.LinearMipMapLinearFilter = 8;
 
-				this.magFilter = source.magFilter;
-				this.minFilter = source.minFilter;
+window.ByteType = 9;
+window.UnsignedByteType = 10;
+window.ShortType = 11;
+window.UnsignedShortType = 12;
+window.IntType = 13;
+window.UnsignedIntType = 14;
+window.FloatType = 15;
 
-				this.anisotropy = source.anisotropy;
-
-				this.format = source.format;
-				this.type = source.type;
-
-				this.offset.copy(source.offset);
-				this.repeat.copy(source.repeat);
-
-				this.generateMipmaps = source.generateMipmaps;
-				this.premultiplyAlpha = source.premultiplyAlpha;
-				this.flipY = source.flipY;
-				this.unpackAlignment = source.unpackAlignment;
-
-				return this;
-			},
-
-			toJSON: function (meta) {
-				if (meta.textures[ this.uuid ] !== undefined) {
-					return meta.textures[ this.uuid ];
-				}
-
-				function getDataURL(image) {
-					var canvas;
-
-					if (image.toDataURL !== undefined) {
-						canvas = image;
-					} else {
-						canvas = document.createElement('canvas');
-						canvas.width = image.width;
-						canvas.height = image.height;
-
-						canvas.getContext('2d').drawImage(image, 0, 0, image.width, image.height);
-					}
-
-					if (canvas.width > 2048 || canvas.height > 2048) {
-						return canvas.toDataURL('image/jpeg', 0.6);
-					} else {
-						return canvas.toDataURL('image/png');
-					}
-				}
-
-				var output = {
-					metadata: {
-						version: 4.4,
-						type: 'Texture',
-						generator: 'Texture.toJSON'
-					},
-
-					uuid: this.uuid,
-					name: this.name,
-
-					mapping: this.mapping,
-
-					repeat: [ this.repeat.x, this.repeat.y ],
-					offset: [ this.offset.x, this.offset.y ],
-					wrap: [ this.wrapS, this.wrapT ],
-
-					minFilter: this.minFilter,
-					magFilter: this.magFilter,
-					anisotropy: this.anisotropy
-				};
-
-				if (this.image !== undefined) {
-					// TODO: Move to Image
-
-					var image = this.image;
-
-					if (image.uuid === undefined) {
-						image.uuid = Math.generateUUID(); // UGH
-					}
-
-					if (meta.images[ image.uuid ] === undefined) {
-						meta.images[ image.uuid ] = {
-							uuid: image.uuid,
-							url: getDataURL(image)
-						};
-					}
-
-					output.image = image.uuid;
-				}
-
-				meta.textures[ this.uuid ] = output;
-
-				return output;
-			},
-
-			dispose: function () {
-				this.dispatchEvent({ type: 'dispose' });
-			},
-
-			transformUv: function (uv) {
-				if (this.mapping !== UVMapping)
-					return;
-
-				uv.multiply(this.repeat);
-				uv.add(this.offset);
-
-				if (uv.x < 0 || uv.x > 1) {
-					switch (this.wrapS) {
-						case RepeatWrapping:
-
-							uv.x = uv.x - Math.floor(uv.x);
-							break;
-
-						case ClampToEdgeWrapping:
-
-							uv.x = uv.x < 0 ? 0 : 1;
-							break;
-
-						case MirroredRepeatWrapping:
-
-							if (Math.abs(Math.floor(uv.x) % 2) === 1) {
-								uv.x = Math.ceil(uv.x) - uv.x;
-							} else {
-								uv.x = uv.x - Math.floor(uv.x);
-							}
-							break;
-					}
-				}
-
-				if (uv.y < 0 || uv.y > 1) {
-					switch (this.wrapT) {
-						case RepeatWrapping:
-
-							uv.y = uv.y - Math.floor(uv.y);
-							break;
-
-						case ClampToEdgeWrapping:
-
-							uv.y = uv.y < 0 ? 0 : 1;
-							break;
-
-						case MirroredRepeatWrapping:
-
-							if (Math.abs(Math.floor(uv.y) % 2) === 1) {
-								uv.y = Math.ceil(uv.y) - uv.y;
-							} else {
-								uv.y = uv.y - Math.floor(uv.y);
-							}
-							break;
-					}
-				}
-
-				if (this.flipY) {
-					uv.y = 1 - uv.y;
-				}
-			}
-		};
-
-		EventDispatcher.prototype.apply(Texture.prototype);
-
-		TextureIdCount = 0;
-
-		return Texture;
-	}();
-});
+window.AlphaFormat = 16;
+window.RGBFormat = 17;
+window.RGBAFormat = 18;
+window.LuminanceFormat = 19;
+window.LuminanceAlphaFormat = 20;
